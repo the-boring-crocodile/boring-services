@@ -9,7 +9,7 @@ license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "COPYING.md"]
 description = "A notebook the agents keep for each other: small entries, full-text search, every version with its author"
 requires-python = ">=3.10"
-dependencies = ["mcp>=2.2,<2.3", "boring-service-kit>=0.7.5,<0.8", "boring-registry>=0.7.5,<0.8"]
+dependencies = ["mcp>=2.2,<2.3", "boring-service-kit>=0.7.6,<0.8", "boring-registry>=0.7.6,<0.8"]
 
 [project.optional-dependencies]
 test = ["pytest"]
