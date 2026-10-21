@@ -1,0 +1,17 @@
+{
+  "url": "https://knowledge-url.example.test/mcp",
+  "bind": "0.0.0.0",
+  "port": 18512,
+  "issuer": {
+    "database": "/data/state/oauth/oauth.db",
+    "approval_secret_file": "approval-secret",
+    "subject": "robin",
+    "name": "Robin"
+  },
+  "access": [
+    {
+      "subject": "robin",
+      "role": "writer"
+    }
+  ]
+}

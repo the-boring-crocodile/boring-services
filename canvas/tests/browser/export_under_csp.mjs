@@ -1,0 +1,21 @@
+import { firefox } from 'playwright';
+const base = process.argv[2];
+const { canvas_id: id, token } = JSON.parse(process.env.CANVAS);  // made by run.sh (new_canvas.py): no web route creates a canvas
+const browser = await firefox.launch();
+const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
+const errors = [];
+page.on('console', (m) => { if (m.type() === 'error' || /Content-Security-Policy|CSP/i.test(m.text())) errors.push(m.text().slice(0, 300)); });
+page.on('pageerror', (e) => errors.push('pageerror: ' + e.message.slice(0, 300)));
+await page.addInitScript(() => document.addEventListener('securitypolicyviolation', (e) => { (window.__csp = window.__csp || []).push(`${e.violatedDirective} ${e.blockedURI}`); }));
+const loaded = page.waitForEvent('console', { predicate: (m) => m.text().includes('root.render() called'), timeout: 60000 });
+await page.goto(`${base}/canvas/${id}?this-is-unsafe-dont-do-this-auth=${token}`);
+await loaded; await page.waitForTimeout(2000);
+await page.locator('[data-testid="toolbar-text"]').click({ force: true });
+await page.mouse.click(500, 300); await page.keyboard.type('CSP test'); await page.keyboard.press('Escape');
+await page.waitForTimeout(500);
+await page.keyboard.press('Control+Shift+E');
+await page.waitForTimeout(4000);
+const dialog = await page.locator('.ImageExportModal, [class*="ExportDialog"], .Modal').count();
+const previewCanvas = await page.locator('.ImageExportModal__preview canvas, .ImageExportModal__preview img, .ImageExportModal__preview svg').count();
+console.log(JSON.stringify({ export_dialog: dialog, preview_rendered: previewCanvas, csp: await page.evaluate(() => window.__csp || []), errors }, null, 1));
+await browser.close();

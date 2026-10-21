@@ -1,0 +1,12 @@
+{
+  "url": "https://pond.example/fishmarket/mcp",
+  "bind": "0.0.0.0",
+  "port": 8000,
+  "oauth": {
+    "issuer": "https://pond.example",
+    "introspection_url": "https://pond.example/introspect",
+    "client_id": "REVIEW_AND_PROVISION_FISHMARKET",
+    "secret_file": "introspection.secret"
+  },
+  "access": []
+}

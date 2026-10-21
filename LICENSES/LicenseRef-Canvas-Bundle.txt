@@ -1,0 +1,11 @@
+Third-party bundle
+
+The files in canvas/src/boring_canvas/assets/ are a build of Excalidraw and
+its dependencies, with their fonts, made by canvas/frontend/build.mjs. They
+are not covered by the licence of boring-services. Each component keeps its
+own licence: the inventory with versions and declared licences is
+assets/DEPENDENCIES.json, the licence texts the packages ship are in
+assets/licenses/, and esbuild's extracted legal comments are in the
+*.LEGAL.txt files next to the chunks; each font directory has its
+LICENSE.txt. canvas/frontend/notices/ keeps the notices upstream does not
+ship. BUILD.json records the build.

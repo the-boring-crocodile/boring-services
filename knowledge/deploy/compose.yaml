@@ -1,0 +1,43 @@
+# boring-knowledge: the template a first install turns into HOME/compose.yaml
+# (deploy/install.py). From then on that file is the operator's: install and
+# deploy never rewrite it; the deploy changes only HOME/.env (BORING_IMAGE).
+# @UID@:@GID@ are the service account's, as the OS assigned them.
+
+services:
+  knowledge:
+    image: ${BORING_IMAGE}
+    user: "@UID@:@GID@"
+    restart: unless-stopped
+    # Everything Knowledge writes is under /data/state (the notebook with its
+    # WAL files, the issuer's state/oauth, the call log); the image itself
+    # stays read-only. /tmp is for SQLite's temporary files (sorts, FTS work;
+    # it skips the read-only /var/tmp).
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ports:
+      # MCP on host loopback only: the Pond's worker or the reverse proxy.
+      - "127.0.0.1:18512:18512"
+    volumes:
+      # The notebook: real, persistent data beside the deployment; uninstall keeps it.
+      - ./state:/data/state
+      # config.json and the files it names, the account's, read-only.
+      - ./config:/run/config:ro
+      # The secrets (mcp-client-secret; config.json names ../credentials/...), the account's, read-only.
+      - ./credentials:/run/credentials:ro
+    command:
+      - "http"
+      - "--config=/run/config/config.json"
+      - "--db=/data/state/notebook.db"
+      - "--role=global"
+      - "--state-dir=/data/state"
+
+# A fixed subnet outside Docker's pools, so a host firewall rule that lets the
+# service reach the control plane (from 172.16.43.0/24) cannot go stale.
+# Canvas has 172.16.42.0/24.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.16.43.0/24

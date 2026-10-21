@@ -1,0 +1,41 @@
+# boring-sourcecache-d365: the template a first install turns into
+# HOME/compose.yaml (deploy/install.py). From then on that file is the
+# operator's: install and deploy never rewrite it; the deploy changes only
+# HOME/.env (BORING_IMAGE). @UID@:@GID@ are the service account's, as the OS
+# assigned them. More index files: add a --db line each (snapshots/ is mounted).
+
+services:
+  sourcecache:
+    image: ${BORING_IMAGE}
+    user: "@UID@:@GID@"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:mode=1777
+    ports:
+      # MCP on host loopback only: the Pond's worker or the reverse proxy.
+      - "127.0.0.1:18513:18513"
+    volumes:
+      - ./state:/data/state
+      # The index files, root's, read-only; uninstall keeps them.
+      - ./snapshots:/data/snapshots:ro
+      # config.json and the files it names, the account's, read-only.
+      - ./config:/run/config:ro
+      # The secrets (mcp-client-secret; config.json names ../credentials/...), the account's, read-only.
+      - ./credentials:/run/credentials:ro
+    command:
+      - serve
+      - --config=/run/config/config.json
+      - --db=/data/snapshots/@INDEX@
+      - --state-dir=/data/state
+      - --no-warm-up
+
+# A fixed subnet outside Docker's pools, so a host firewall rule that lets the
+# service reach the control plane (from 172.16.44.0/24) cannot go stale.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.16.44.0/24

@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>%%TITLE%%</title>
+
+<!-- Built from the locked frontend dependencies and shipped with the wheel. -->
+<link rel="stylesheet" href="/canvas/assets/editor.css?v=%%ASSET_REVISION%%" />
+<script nonce="%%NONCE%%">
+  window.EXCALIDRAW_ASSET_PATH = "/canvas/assets/";
+</script>
+
+<style>
+  html, body { margin: 0; height: 100%; font-family: sans-serif;
+    background: #121212; color: #e8e8e8; }
+  #token-form { max-width: 320px; margin: 80px auto; text-align: center; }
+  #token-form input { width: 100%; padding: 8px; box-sizing: border-box;
+    background: #1e1e1e; color: #e8e8e8; border: 1px solid #444; }
+  #token-form button { margin-top: 8px; padding: 8px 16px;
+    background: #2a2a2a; color: #e8e8e8; border: 1px solid #444; }
+  #token-error { color: #ff8080; min-height: 1.2em; }
+  #canvas-root { height: 100vh; position: relative; display: none; }
+  #pushed-background {
+    /* Fallback only now -- see insertPushedImage() below. Used
+       automatically if constructing a real Excalidraw "image" element
+       fails for any reason, so a failure degrades to what already worked
+       (a flat background picture) rather than showing nothing. */
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: contain; pointer-events: none; z-index: 0; display: none;
+  }
+  #excalidraw-wrapper { position: absolute; inset: 0; z-index: 1; }
+  #debug-line {
+    position: absolute; top: 4px; left: 4px; z-index: 9999;
+    background: black; color: #6f6; font: 11px monospace; padding: 4px 8px;
+    white-space: pre; pointer-events: none; display: none;
+  }
+  #status-line {
+    /* A failed save or poll, shown to the person drawing; empty and hidden
+       while everything works. */
+    position: absolute; bottom: 64px; left: 50%; transform: translateX(-50%);
+    z-index: 9999; max-width: 90%; padding: 4px 10px; border-radius: 4px;
+    background: #5c1e1e; color: #ffd7d7; font: 13px sans-serif;
+    pointer-events: none; display: none;
+  }
+</style>
+</head>
+<body>
+
+<div id="token-form">
+  <h3>Enter canvas token</h3>
+  <input id="token-input" type="text" placeholder="token" autofocus />
+  <button id="token-submit">Open canvas</button>
+  <p id="token-error"></p>
+</div>
+
+<div id="canvas-root">
+  <div id="debug-line">booting...</div>
+  <div id="status-line" role="status"></div>
+  <img id="pushed-background" alt="" />
+  <div id="excalidraw-wrapper"></div>
+</div>
+
+<script nonce="%%NONCE%%">
+  window.__CANVAS_ID__ = "%%CANVAS_ID%%";
+  window.__AUTHED__ = %%AUTHED%%;
+  window.__SCENE_SVG__ = %%SCENE_SVG_JSON%%;
+  window.__ELEMENTS__ = %%ELEMENTS_JSON%%;
+
+  if (window.__AUTHED__) {
+    document.getElementById("token-form").style.display = "none";
+    document.getElementById("canvas-root").style.display = "block";
+  }
+
+  // A link with "#this-is-unsafe-dont-do-this-auth=<token>" (open_url, opt-in on the
+  // server) signs in like the form below. The fragment never reaches the server or its
+  // logs; it is cleared from the address bar before anything else.
+  {
+    const fragment = new URLSearchParams(location.hash.slice(1));
+    const linked = fragment.get("this-is-unsafe-dont-do-this-auth");
+    if (linked) {
+      history.replaceState(null, "", location.pathname + location.search);
+      fetch(`/canvas/${window.__CANVAS_ID__}/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: linked }),
+      }).then((res) => {
+        if (res.ok) window.location.reload();
+        else document.getElementById("token-error").textContent = "This link's token is no longer valid.";
+      });
+    }
+  }
+
+  document.getElementById("token-submit").addEventListener("click", async () => {
+    const token = document.getElementById("token-input").value;
+    const res = await fetch(`/canvas/${window.__CANVAS_ID__}/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (res.ok) {
+      window.location.reload();
+    } else {
+      document.getElementById("token-error").textContent = "Invalid token.";
+    }
+  });
+</script>
+
+<script nonce="%%NONCE%%" type="module">
+  if (window.__AUTHED__) {
+    // Gated behind ?debug=1, not deleted: was genuinely useful for finding
+    // the invisible-rose bug earlier tonight. console.log always runs
+    // (harmless); only the visible on-page line needs the flag.
+    const debugOn = new URLSearchParams(location.search).get("debug") === "1";
+    const debugLine = document.getElementById("debug-line");
+    if (debugOn) debugLine.style.display = "block";
+    const log = (msg) => {
+      console.log("[boring-canvas]", msg);
+      if (debugOn) debugLine.textContent += "\n" + msg;
+    };
+    if (debugOn) debugLine.textContent = `scene present: ${window.__SCENE_SVG__ !== null}`;
+
+    // Failed saves and polls are shown, not swallowed: one line per kind,
+    // each cleared by the next success of the same kind. No extra retries:
+    // the next change saves again, the poll runs again next second.
+    const statusLine = document.getElementById("status-line");
+    const problems = { load: "", save: "", poll: "" };
+    const setProblem = (kind, message) => {
+      if (problems[kind] === message) return;
+      problems[kind] = message;
+      if (message) log(message);
+      const text = Object.values(problems).filter(Boolean).join(" \u00b7 ");
+      statusLine.textContent = text;
+      statusLine.style.display = text ? "block" : "none";
+    };
+    const reasonOf = async (res) => {
+      try { return (await res.json()).error || `HTTP ${res.status}`; }
+      catch (e) { return `HTTP ${res.status}`; }
+    };
+
+    // ============================================================
+    // TL;DR for future confused us (2am, a month from now, whatever):
+    // this function had two real bugs, both closed, kept distinct on
+    // purpose because they're different in kind:
+    //   1. OURS (fixed): status was hardcoded "saved" as a lazy guess.
+    //      Real lifecycle starts at "pending" (Excalidraw's own PR #4011
+    //      says so). Claiming "saved" made transparent regions render
+    //      as a solid light box instead -- see the comment on `status`
+    //      below for why.
+    //   2. THEIRS (worked around, not fixed -- can't fix someone else's
+    //      library from here): newly-added SVG images show a blank
+    //      placeholder on first paint until something forces a repaint.
+    //      Public, open, reproduced bug: github.com/excalidraw/excalidraw
+    //      issue #7886. A fake window resize event does nothing; a real
+    //      layout change does (see the requestAnimationFrame block below
+    //      -- that's the workaround, not a fix, and it's Excalidraw's
+    //      code that's wrong, not ours).
+    // Both confirmed live in a browser.
+    // ============================================================
+    //
+    // Promote the pushed SVG from a flat background image to a real
+    // Excalidraw "image" scene element -- selectable, movable, part of
+    // getSceneElements()'s own output, not just something sitting behind
+    // the canvas. Deferred last night specifically because guessing at
+    // this schema wrong risked a broken/silently-misrendered element;
+    // built now against Excalidraw's actual verified type definitions
+    // (packages/element/src/types.ts, fetched from source, not recalled),
+    // not the skeleton-API shortcut (convertToExcalidrawElements does not
+    // support image skeletons -- open GitHub issue #8118 confirms it).
+    const PUSHED_IMAGE_ID = "boring-canvas-pushed-scene";
+    const PUSHED_FILE_ID = "boring-canvas-pushed-scene-file";
+    const insertPushedImage = async (api) => {
+      if (!window.__SCENE_SVG__) return;
+      try {
+        const dataURL = "data:image/svg+xml;base64," +
+          btoa(unescape(encodeURIComponent(window.__SCENE_SVG__)));
+        const dims = await new Promise((resolve, reject) => {
+          const probe = new Image();
+          probe.onload = () => resolve({
+            w: probe.naturalWidth || 400, h: probe.naturalHeight || 400,
+          });
+          probe.onerror = () => reject(new Error("pushed SVG failed to decode as an image"));
+          probe.src = dataURL;
+        });
+        api.addFiles([{
+          id: PUSHED_FILE_ID, dataURL, mimeType: "image/svg+xml", created: Date.now(),
+        }]);
+        // Filter out any stale copy from a previous load (elements_json
+        // round-trips through the browser's own save, so one may already
+        // be there) before adding the fresh one -- same id every time, so
+        // this replaces in place rather than accumulating duplicates.
+        const all = api.getSceneElements();
+        const previous = all.find((el) => el.id === PUSHED_IMAGE_ID && !el.isDeleted);
+        const existing = all.filter((el) => el.id !== PUSHED_IMAGE_ID);
+        // A replaced drawing keeps the place of the one before it (the
+        // person may have moved it); a first drawing lands in the middle
+        // of what the person is looking at, not at the scene origin.
+        let x, y;
+        if (previous) {
+          x = previous.x; y = previous.y;
+        } else {
+          const view = api.getAppState();
+          const zoom = (view.zoom && view.zoom.value) || 1;
+          x = Math.round(view.width / 2 / zoom - view.scrollX - dims.w / 2);
+          y = Math.round(view.height / 2 / zoom - view.scrollY - dims.h / 2);
+        }
+        const imageElement = {
+          id: PUSHED_IMAGE_ID, type: "image",
+          x, y, width: dims.w, height: dims.h, angle: 0,
+          strokeColor: "transparent", backgroundColor: "transparent",
+          fillStyle: "solid", strokeWidth: 1, strokeStyle: "solid",
+          roundness: null, roughness: 0, opacity: 100,
+          seed: Math.floor(Math.random() * 2 ** 31), version: 1,
+          versionNonce: Math.floor(Math.random() * 2 ** 31),
+          index: null, isDeleted: false, groupIds: [], frameId: null,
+          boundElements: null, updated: Date.now(), link: null,
+          // Locked: drawing on or dragging over the picture must not move it
+          // away from the person's marks (it felt like two planes panning
+          // apart). Right-click > Unlock still moves it on purpose.
+          locked: true,
+          fileId: PUSHED_FILE_ID, status: "pending", scale: [1, 1], crop: null,
+          // "pending", not "saved": PR #4011 (Excalidraw's own original
+          // image-support work) describes this field as starting at
+          // "pending" and only becoming "saved" once the real loading path
+          // confirms the file. "saved" upfront tells the renderer to skip
+          // loading a file its imageCache never populated: transparent
+          // regions then render opaque, without any JS error.
+        };
+        // The pushed drawing is the background: always the
+        // bottom of the stacking order, so it never covers hand drawing.
+        api.updateScene({ elements: [imageElement, ...existing] });
+        log(`pushed image inserted as a real element (${dims.w}x${dims.h})`);
+        // Known Excalidraw quirk on first paint of a newly-added SVG image
+        // (github.com/excalidraw/excalidraw issue #7886): shows a
+        // placeholder until something forces a repaint. A fake
+        // window.dispatchEvent(new Event("resize")) didn't do it
+        // (confirmed live) -- likely because Excalidraw watches the actual
+        // canvas container via ResizeObserver, not window's resize event,
+        // and a synthetic Event on window does nothing to a ResizeObserver.
+        // Forcing one real, measurable layout change instead: nudge the
+        // wrapper's own size by 1px and back, which trips a ResizeObserver
+        // watching it or its children the same way a real window resize
+        // would, after a paint frame so Excalidraw's own async loading has
+        // had a chance to settle first.
+        requestAnimationFrame(() => {
+          const wrapperEl = document.getElementById("excalidraw-wrapper");
+          wrapperEl.style.paddingRight = "1px";
+          requestAnimationFrame(() => {
+            wrapperEl.style.paddingRight = "";
+            window.dispatchEvent(new Event("resize"));
+            log("forced a real layout nudge to trigger first-paint repaint");
+          });
+        });
+      } catch (err) {
+        log(`native image element failed (${err.message}), falling back to background <img>`);
+        const bg = document.getElementById("pushed-background");
+        bg.onload = () => log(`fallback bg image loaded: ${bg.naturalWidth}x${bg.naturalHeight}`);
+        bg.onerror = (e) => log(`fallback bg image FAILED to load: ${e}`);
+        bg.src = "data:image/svg+xml;base64," +
+          btoa(unescape(encodeURIComponent(window.__SCENE_SVG__)));
+        bg.style.display = "block";
+      }
+    };
+
+    try {
+      // Dynamic import(), not static `import ... from`: static import
+      // declarations are only legal at module top level and cannot be
+      // nested inside a block -- that was a real bug here, caught by
+      // building and actually testing this, not by inspection alone.
+      const { ExcalidrawLib, React, createRoot } =
+        await import('/canvas/assets/editor.js?v=%%ASSET_REVISION%%');
+      log("Excalidraw + React modules loaded OK");
+
+      const wrapper = document.getElementById("excalidraw-wrapper");
+      const root = createRoot(wrapper);
+
+      // Debounced save of the browser's own drawing state back to the
+      // server -- the piece that was actually missing tonight. Elements
+      // are passed through opaquely (see storage.py, write_elements): we
+      // don't try to understand Excalidraw's schema, only store what it
+      // hands us and return the same thing later.
+      // pending: the newest elements not yet stored. flushSave() stores
+      // them now; it returns whether nothing is left unsaved. A pushed
+      // drawing reloads the page only after a successful flush, so an
+      // agent's push never drops the person's last strokes.
+      let saveTimer = null;
+      let pending = null;
+      let changeVersion = 0;
+      let saving = Promise.resolve(true);
+      const postElements = async (elements) => {
+        try {
+          const res = await fetch(`/canvas/${window.__CANVAS_ID__}/elements`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(elements),
+          });
+          if (res.ok) {
+            log(`elements saved (${elements.length})`);
+            setProblem("save", "");
+            return true;
+          }
+          setProblem("save", `could not save: ${await reasonOf(res)}`);
+        } catch (e) {
+          setProblem("save", `not saved (${e.message}), retrying with your next change`);
+        }
+        return false;
+      };
+      const flushSave = () => {
+        clearTimeout(saveTimer);
+        saveTimer = null;
+        // Select the latest state when this queued flush starts. Keep it
+        // pending until acknowledged, so an older failed save cannot restore
+        // stale state and a newer stroke prevents an automatic reload.
+        saving = saving.then(async () => {
+          const elements = pending;
+          const version = changeVersion;
+          if (elements === null) return true;
+          const ok = await postElements(elements);
+          if (ok && changeVersion === version) pending = null;
+          return ok && pending === null;
+        });
+        return saving;
+      };
+      const scheduleSave = (elements) => {
+        changeVersion += 1;
+        pending = elements;
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(flushSave, 1000);
+      };
+      // Leaving the page (closing the tab, navigating away): last chance.
+      window.addEventListener("pagehide", () => {
+        if (pending === null) return;
+        try {
+          fetch(`/canvas/${window.__CANVAS_ID__}/elements`, {
+            method: "POST", keepalive: true,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(pending),
+          });
+        } catch (e) {}
+      });
+
+      // Light/dark: Excalidraw's own switch in its main menu. Dark is the
+      // default; the choice is remembered per browser (a convenience only:
+      // without storage the page simply starts dark). The canvas is
+      // transparent over the page, so the page background follows the theme.
+      const THEME_KEY = "boring-canvas-theme";
+      let theme = "dark";
+      try { if (localStorage.getItem(THEME_KEY) === "light") theme = "light"; } catch (e) {}
+      const applyPageTheme = (t) => {
+        document.body.style.background = t === "light" ? "#ffffff" : "#121212";
+        document.body.style.color = t === "light" ? "#1e1e1e" : "#e8e8e8";
+      };
+      applyPageTheme(theme);
+      root.render(
+        React.createElement(ExcalidrawLib.Excalidraw, {
+          initialData: {
+            elements: window.__ELEMENTS__ || [],
+            appState: { viewBackgroundColor: "transparent", theme },
+          },
+          UIOptions: { canvasActions: { toggleTheme: true } },
+          onChange: (elements, appState) => {
+            scheduleSave(elements);
+            if (appState && appState.theme && appState.theme !== theme) {
+              theme = appState.theme;
+              applyPageTheme(theme);
+              try { localStorage.setItem(THEME_KEY, theme); } catch (e) {}
+            }
+          },
+          excalidrawAPI: (api) => { insertPushedImage(api); },
+        })
+      );
+      log(`Excalidraw root.render() called (${(window.__ELEMENTS__ || []).length} restored elements)`);
+
+      // Live refresh: the browser polls its own page, nothing wakes chat.
+      // The rejected "push-on-change" was specifically canvas-to-chat
+      // (nothing to wake between turns); this is the opposite direction.
+      // 1s: meant for a desktop browser, not a phone on battery.
+      let lastVersion = null;
+      setInterval(async () => {
+        try {
+          const res = await fetch(`/canvas/${window.__CANVAS_ID__}/version`);
+          if (!res.ok) {
+            setProblem("poll", `not syncing: ${await reasonOf(res)}, retrying`);
+            return;
+          }
+          const data = await res.json();
+          setProblem("poll", "");
+          if (lastVersion === null) { lastVersion = data.version; return; }
+          if (data.version !== lastVersion) {
+            // Store the person's pending strokes first; reload only when
+            // nothing is left unsaved, otherwise try again next second.
+            if (!(await flushSave())) {
+              setProblem("poll", "a new drawing arrived; waiting until your last change is saved");
+              return;
+            }
+            log(`version changed (${lastVersion} -> ${data.version}), reloading`);
+            window.location.reload();
+          }
+        } catch (e) { setProblem("poll", `not syncing (${e.message}), retrying`); }
+      }, 1000);
+    } catch (err) {
+      setProblem("load", `canvas failed to load: ${err.message}`);
+      if (debugOn) debugLine.style.color = "#f66";
+    }
+  }
+</script>
+
+</body>
+</html>

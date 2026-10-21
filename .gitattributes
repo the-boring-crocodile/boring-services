@@ -1,0 +1,3 @@
+# Third-party licence texts are kept verbatim.
+canvas/frontend/notices/fonts/** -whitespace
+canvas/src/boring_canvas/assets/** -whitespace

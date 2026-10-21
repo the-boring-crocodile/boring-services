@@ -1,0 +1,23 @@
+version = 1
+
+# The last matching annotation wins.
+
+[[annotations]]
+path = ["**"]
+SPDX-FileCopyrightText = "2026 Wald and the boring-services contributors"
+SPDX-License-Identifier = "AGPL-3.0-or-later"
+
+[[annotations]]
+path = ["**/*.md", "docs/**"]
+SPDX-FileCopyrightText = "2026 Wald and the boring-services contributors"
+SPDX-License-Identifier = "CC-BY-SA-4.0"
+
+[[annotations]]
+path = ["examples/**"]
+SPDX-FileCopyrightText = "2026 Wald and the boring-services contributors"
+SPDX-License-Identifier = "CC0-1.0"
+
+[[annotations]]
+path = ["canvas/src/boring_canvas/assets/**", "canvas/frontend/notices/packages/**", "canvas/frontend/notices/fonts/**"]
+SPDX-FileCopyrightText = "the Excalidraw authors and the authors of its dependencies"
+SPDX-License-Identifier = "LicenseRef-Canvas-Bundle"

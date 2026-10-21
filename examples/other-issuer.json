@@ -1,0 +1,25 @@
+{
+  "url": "https://knowledge-url.example.test/mcp",
+  "bind": "127.0.0.1",
+  "port": 18512,
+  "oauth": {
+    "issuer": "https://identity-url.example.test",
+    "introspection_url": "https://identity-url.example.test/introspect",
+    "client_id": "knowledge-resource",
+    "secret_file": "introspection.secret",
+    "scopes": [
+      "mcp"
+    ]
+  },
+  "access": [
+    {
+      "subject": "robin",
+      "role": "writer"
+    },
+    {
+      "subject": "pond",
+      "role": "writer",
+      "author": "pond"
+    }
+  ]
+}

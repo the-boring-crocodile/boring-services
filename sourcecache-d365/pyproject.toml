@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boring-sourcecache-d365"
+version = "0.1.15"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "COPYING.md"]
+description = "Independent D365 source snapshots, element and label search"
+requires-python = ">=3.10"
+dependencies = ["mcp>=2.2,<2.3", "boring-registry>=0.7.5,<0.8", "boring-service-kit>=0.7.5,<0.8"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+boring-sourcecache-d365 = "boring_sourcecache_d365.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]

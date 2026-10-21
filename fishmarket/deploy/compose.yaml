@@ -1,0 +1,42 @@
+# boring-fishmarket: the template a first install turns into HOME/compose.yaml
+# (deploy/install.py). From then on that file is the operator's: install and
+# deploy never rewrite it; the deploy changes only HOME/.env (BORING_IMAGE).
+# @UID@:@GID@ are the service account's, as the OS assigned them. No host
+# port: the edge (Caddy) reaches it on its network (--edge-network) at
+# fishmarket:8000; see docs/DEPLOYMENT.md for the routes.
+
+services:
+  fishmarket:
+    image: ${BORING_IMAGE}
+    user: "@UID@:@GID@"
+    command:
+      - "--config"
+      - "/stack/config/config.json"
+      - "--state-dir"
+      - "/stack/state"
+      # Only with --unsafe-url-auth: receipts also carry open_url, the link with
+      # the token in its fragment.
+      - "--unsafe-url-auth"  # @UNSAFE_URL_AUTH@
+    volumes:
+      # config.json and the files it names, the account's, read-only.
+      - ./config:/stack/config:ro
+      # The secrets (config.json names ../credentials/...), the account's, read-only.
+      - ./credentials:/stack/credentials:ro
+      # Runtime state: temporary transfers; exclude it from backups.
+      - ./state:/stack/state
+    networks: [edge]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 20s
+    read_only: true
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    logging:
+      driver: local
+      options: {max-size: "5m", max-file: "2"}
+
+networks:
+  edge:
+    external: true
+    name: @EDGE_NETWORK@

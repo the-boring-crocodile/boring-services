@@ -1,0 +1,11 @@
+#!/bin/sh
+# boring-canvas-admin -- list, delete, token and limits for boring-canvas, run inside
+# the running container (see src/boring_canvas/admin.py). Put in place by the
+# first install as /usr/local/sbin/boring-canvas-admin; needs root (Docker).
+#
+#   sudo boring-canvas-admin list
+#   sudo boring-canvas-admin delete <canvas-id>
+#   sudo boring-canvas-admin token <name> [--owner <caller>]   (prints a fresh browser token once)
+#   sudo boring-canvas-admin limits
+set -eu
+exec docker compose -f @HOME@/compose.yaml exec -T canvas python3 -m boring_canvas.admin "$@"

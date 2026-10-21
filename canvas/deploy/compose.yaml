@@ -1,0 +1,51 @@
+# boring-canvas: the template a first install turns into HOME/compose.yaml
+# (deploy/install.py). From then on that file is the operator's: install and
+# deploy never rewrite it; the deploy changes only HOME/.env (BORING_IMAGE).
+#
+# @UID@:@GID@ are the service account's, as the OS assigned them (never
+# hardcoded, never the Crocodile's: Canvas is a guest). No
+# hostname here: the edge (Caddy) knows it; --public-base-url is the address
+# it serves Canvas at.
+
+services:
+  canvas:
+    image: ${BORING_IMAGE}
+    user: "@UID@:@GID@"
+    restart: unless-stopped
+    # Everything Canvas writes is under /data/state (canvases, the issuer's
+    # state/oauth, the call log); the image itself stays read-only. /tmp is for
+    # SQLite's temporary files (it skips the read-only /var/tmp).
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    ports:
+      # Web on the install's --web-bind (default 127.0.0.1, for a proxy on the
+      # host; a proxy in a container may need Docker's host gateway).
+      - "@WEB_BIND@:18510:18510"
+      # MCP on host loopback only: the Pond's worker or the reverse proxy;
+      # the URL it answers as is "url" in config.json.
+      - "127.0.0.1:18511:18511"
+    volumes:
+      # Real, persistent data beside the deployment, backed up with it; uninstall keeps it.
+      - ./state:/data/state
+      # config.json and the files it names, the account's, read-only.
+      - ./config:/run/config:ro
+      # The secrets (mcp-client-secret; config.json names ../credentials/...), the account's, read-only.
+      - ./credentials:/run/credentials:ro
+    command:
+      - "--state-dir=/data/state"
+      - "--host=0.0.0.0"
+      - "--port=18510"
+      - "--public-base-url=@PUBLIC_URL@"
+      - "--config=/run/config/config.json"
+      # Only with --unsafe-url-auth: links carry the canvas's token.
+      - "--unsafe-url-auth"  # @UNSAFE_URL_AUTH@
+
+# A fixed subnet outside Docker's pools, so a host firewall rule that lets
+# Canvas reach the control plane (from 172.16.42.0/24) cannot go stale.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.16.42.0/24
