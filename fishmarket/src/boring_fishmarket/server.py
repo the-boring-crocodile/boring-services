@@ -401,15 +401,19 @@ class App:
             if started:
                 await disk_call(self.store.release, transfer_id)
 
-    async def file(self, request, *, caller=None):
+    async def file(self, request, *, caller=None, collect=None):
         # Every store and payload call here runs in a thread through disk_call,
         # as uploads do: the store lock is also taken by uploads, the MCP tools
         # and the expiry sweep, and the event loop must never wait for it (nor
         # for a slow disk read). disk_call also keeps a read in flight from
         # racing the close that follows a cancelled stream.
-        browser = None if caller is not None else request.cookies.get(COOKIE, "")
+        browser = (
+            None if caller is not None or collect is not None
+            else request.cookies.get(COOKIE, "")
+        )
         context = self.store.reader(
-            request.path_params["transfer_id"], caller=caller, browser=browser
+            request.path_params["transfer_id"], caller=caller, browser=browser,
+            collect=collect,
         )
         opened = []
         closed = False
@@ -449,7 +453,9 @@ class App:
                 await disk_call(handle.seek, start)
 
                 def still_valid():
-                    return self.store.valid_stream(row["id"], caller=caller, browser=browser)
+                    return self.store.valid_stream(
+                        row["id"], caller=caller, browser=browser, collect=collect
+                    )
 
                 async def stream():
                     remaining = end - start
@@ -468,7 +474,9 @@ class App:
                 return FileResponse(
                     stream(),
                     close=close,
-                    deadline=row["claim_until"]
+                    deadline=row["collect_until"]
+                    if "collect_until" in row
+                    else row["claim_until"]
                     if row["state"] == "claimed"
                     else row["expires"],
                     clock=self.store.clock,
@@ -486,6 +494,13 @@ class App:
         return await self.file(request)
 
     async def collect(self, request):
+        # The helper presents the service bearer. An agent inside a Pond never holds
+        # that bearer; it presents the collection token from collection_receipt.
+        token = request.headers.get("x-fishmarket-token", "")
+        if token:
+            if len(token) > 128:
+                return self.problem(Refused("forbidden", "collection token not valid"))
+            return await self.file(request, collect=token)
         try:
             caller = await self.caller(request)
         except Outcome as exc:

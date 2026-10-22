@@ -35,8 +35,9 @@ def build_server(store, base, config, unsafe_url_auth=False):
     server = MCPServer(
         "boring-fishmarket",
         instructions=(
-            "Temporary file handovers. MCP carries receipts only; use the local streaming helper "
-            "to deposit/collect bytes. Browser URLs/tokens are sensitive capabilities: give them "
+            "Temporary file handovers. MCP carries receipts only; bytes go over HTTP: deposit "
+            "with the transfer's token, collect with the collection receipt's token (or the "
+            "local streaming helper with a service bearer). Browser URLs/tokens are sensitive capabilities: give them "
             "to the intended person only, never logs or shared notes. Upload readiness requires "
             "list_ready or transfer_status; discovery does not notify the model."
         ),
@@ -101,7 +102,7 @@ def build_server(store, base, config, unsafe_url_auth=False):
 
     @tool(
         "reader",
-        "Return receipt and authenticated streaming URL for an owned/granted ready upload; use helper, not model context.",
+        "Return receipt, streaming URL and a new collection token for an owned/granted ready upload. GET download_url with header X-Fishmarket-Token: <token>; valid 10 minutes from now (never past the transfer), any number of reads and Range resumes; a new receipt replaces it. Save to a file, never into model context; verify size and sha, then acknowledge.",
     )
     def collection_receipt(transfer_id: TransferID):
         row = store.collection_receipt(transfer_id, calling_author())

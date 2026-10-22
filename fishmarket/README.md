@@ -27,9 +27,12 @@ local files and never asks the server to read a path or fetch a URL.
   it. Then the file is gone.
 - **Person to agent:** the agent asks for an upload link (with a size limit)
   and gives it to the person; the upload counts only once every byte arrived.
-  The agent's helper collects the file, checks size and SHA-256, publishes it
-  without overwriting anything, and only then acknowledges, which deletes it
-  on the server.
+  The agent collects the file, checks size and SHA-256, publishes it without
+  overwriting anything, and only then acknowledges, which deletes it on the
+  server. An agent inside a Pond, which never holds the service bearer,
+  collects with the token from `collection_receipt`: one upload, ten minutes
+  from issue (never past the transfer), any number of reads and resumes; a new
+  receipt replaces it, acknowledging ends it.
 - Every transfer expires (24 hours by default), and its owner can revoke it at
   any time. One process with one private state folder; SQLite keeps the
   bookkeeping.
@@ -57,6 +60,15 @@ boring-fishmarket-transfer --url https://crocodile-url.example.test/fishmarket/m
 boring-fishmarket-transfer --url https://crocodile-url.example.test/fishmarket/mcp --token-file token.txt ready
 boring-fishmarket-transfer --url https://crocodile-url.example.test/fishmarket/mcp --token-file token.txt collect TRANSFER_ID received.zip
 boring-fishmarket-transfer --url https://crocodile-url.example.test/fishmarket/mcp --token-file token.txt ack TRANSFER_ID received.zip
+```
+
+Without the helper, as an agent inside a Pond: call `collection_receipt`, then
+fetch `download_url` with its token, check the hash, and acknowledge through
+MCP with the receipt's size and sha:
+
+```text
+curl -fL -H "X-Fishmarket-Token: TOKEN" -o received.zip DOWNLOAD_URL
+sha256sum received.zip
 ```
 
 Give the receipt's clean `url` plus the separate `token` to the intended person.
