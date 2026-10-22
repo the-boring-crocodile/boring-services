@@ -18,6 +18,8 @@ MAX_FILE_BYTES = 2 * 1024**3
 QUOTA_BYTES = 10 * 1024**3
 LIFETIME_SECONDS = 86400
 RETRY_SECONDS = 600
+# A collection token lives this long from issue, never past its transfer.
+COLLECT_SECONDS = 600
 # Slowest transfer rate the fixed ten-minute window is stretched for: a large
 # file gets size / MIN_TRANSFER_RATE seconds (within the transfer's expiry).
 MIN_TRANSFER_RATE = 1024 * 1024  # bytes per second
@@ -135,6 +137,9 @@ class Store:
               transfer_id TEXT NOT NULL, collector TEXT NOT NULL,
               PRIMARY KEY(transfer_id,collector)
             );
+            CREATE TABLE IF NOT EXISTS collect_tokens (
+              transfer_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, until REAL NOT NULL
+            );
             """)
             self.reconcile()
 
@@ -246,8 +251,21 @@ class Store:
         return row
 
     def collection_receipt(self, transfer_id, caller):
+        """The receipt and a new collection token for callers without the service
+        bearer (an agent inside a Pond). The token reads this one upload for
+        COLLECT_SECONDS from now, never past the transfer's expiry, as often as
+        needed (resumed ranges). A new receipt replaces it; acknowledging or
+        revoking the transfer ends it."""
         with self.lock:
-            return self._receipt(self._collection_row(transfer_id, caller))
+            row = self._collection_row(transfer_id, caller)
+            token = secrets.token_urlsafe(32)
+            until = min(self.clock() + COLLECT_SECONDS, row["expires"])
+            with self.db:
+                self.db.execute(
+                    "INSERT OR REPLACE INTO collect_tokens VALUES (?,?,?)",
+                    (transfer_id, fingerprint(token), until),
+                )
+            return {**self._receipt(row), "token": token, "token_until": until}
 
     def create(self, owner, direction, name="", size=None, sha=None, max_bytes=None):
         if direction not in {"upload", "download"}:
@@ -442,9 +460,25 @@ class Store:
                 )
             return until
 
-    def _reader_row(self, transfer_id, browser, caller):
+    def _reader_row(self, transfer_id, browser, caller, collect=None):
         if caller is not None:
             return self._collection_row(transfer_id, caller)
+        if collect is not None:
+            row = self._row(transfer_id)
+            held = self.db.execute(
+                "SELECT token_hash, until FROM collect_tokens WHERE transfer_id=?",
+                (transfer_id,),
+            ).fetchone()
+            if (
+                row["direction"] == "upload"
+                and row["state"] == "ready"
+                and self._live(row)
+                and held is not None
+                and secrets.compare_digest(held["token_hash"], fingerprint(collect))
+                and held["until"] > self.clock()
+            ):
+                return {**row, "collect_until": held["until"]}
+            raise Refused("forbidden", "collection token not valid")
         row = self._row(transfer_id)
         if not self._live(row):
             raise Refused("not_found", "file expired")
@@ -458,9 +492,9 @@ class Store:
         return row
 
     @contextmanager
-    def reader(self, transfer_id, *, browser=None, caller=None):
+    def reader(self, transfer_id, *, browser=None, caller=None, collect=None):
         with self.lock:
-            row = self._reader_row(transfer_id, browser, caller)
+            row = self._reader_row(transfer_id, browser, caller, collect)
             handle = self.path(transfer_id).open("rb")
             self.active[transfer_id] = self.active.get(transfer_id, 0) + 1
         try:
@@ -469,12 +503,12 @@ class Store:
             handle.close()
             self.release(transfer_id)
 
-    def valid_stream(self, transfer_id, *, browser=None, caller=None):
+    def valid_stream(self, transfer_id, *, browser=None, caller=None, collect=None):
         with self.lock:
-            if browser is None and caller is None:
+            if browser is None and caller is None and collect is None:
                 return self._live(self._row(transfer_id))
             try:
-                self._reader_row(transfer_id, browser, caller)
+                self._reader_row(transfer_id, browser, caller, collect)
                 return True
             except Refused:
                 return False
@@ -533,6 +567,7 @@ class Store:
             download_hash=NULL,browser_hash=NULL WHERE id=?""",
                 (state, transfer_id),
             )
+            self.db.execute("DELETE FROM collect_tokens WHERE transfer_id=?", (transfer_id,))
             # Collector must retain authority to retry a completed acknowledgement.
 
     def cleanup(self):
