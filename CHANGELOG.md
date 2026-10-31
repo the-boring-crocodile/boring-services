@@ -3,6 +3,18 @@
 Notable changes per release, newest first ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [SemVer](https://semver.org/); tags `vX.Y.Z`, candidates `vX.Y.Z-rc.N`).
 
+## 2026-10-31: Canvas 0.2.19
+
+Built on Pond Common 0.7.11, like the other services of 2026-10-30 (unchanged).
+
+### Canvas 0.2.19
+
+- The bundled editor's KaTeX (Mermaid's math labels) is 0.18.10 instead of 0.16.47, past the
+  prototype-pollution advisory GHSA-238p-pmpm-9mq7 (fixed in 0.18.2). Mermaid 11.17.2 asks for
+  KaTeX 0.16, so an override raises it; Mermaid 12 requires 0.18 itself. Rebuilt editor bundle;
+  a browser check converts a Mermaid diagram with a math label under the page's CSP.
+- No change to state, configuration or deployment: upgrade and roll back as for 0.2.18.
+
 ## 2026-10-30: Canvas 0.2.18, Knowledge 0.2.15, D365 Sourcecache 0.1.18, Fishmarket 0.1.14, MCP Ferry 0.1.3
 
 Everything since 2026-10-22. All services build on Pond Common 0.7.11; own-issuer deployments

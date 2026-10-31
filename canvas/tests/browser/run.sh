@@ -25,3 +25,4 @@ echo "== export under CSP"; CANVAS=$(new_canvas export-under-csp) node export_un
 echo "== strokes stay on top of the pushed drawing"; CANVAS=$(new_canvas strokes-stay-on-top) node strokes_stay_on_top.mjs "http://127.0.0.1:$PORT"
 echo "== offline assets"; CANVAS=$(new_canvas offline-assets) node offline_assets.mjs "http://127.0.0.1:$PORT"
 echo "== placement identity"; CANVAS=$(new_canvas placement-identity) node scene_placement.mjs "http://127.0.0.1:$PORT"
+echo "== Mermaid with KaTeX"; CANVAS=$(new_canvas mermaid-math) node mermaid_math.mjs "http://127.0.0.1:$PORT"
