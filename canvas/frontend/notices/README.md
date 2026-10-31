@@ -16,6 +16,7 @@ to a file in `packages/`:
 | micromark.txt | github.com/micromark/micromark, license (MIT) |
 | dagre-d3-es.txt | github.com/tbo47/dagre-es, LICENSE.md (MIT) |
 | react-remove-scroll-bar.txt | github.com/theKashey/react-remove-scroll-bar, LICENSE (MIT) |
+| fastdom.txt | github.com/wilsonpage/fastdom, README.md "License" (MIT; the package ships no licence file) |
 
 `fonts/` holds one notice per font family the build ships from Excalidraw's
 `dist/prod/fonts/`. Liberation Sans 1.05 (GPL-2.0 with the Liberation font

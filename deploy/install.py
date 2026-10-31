@@ -76,6 +76,7 @@ SPECS = {
     "boring-knowledge": Spec([CONFIG]),
     "boring-fishmarket": Spec([CONFIG, EDGE_NETWORK, UNSAFE_URL_AUTH], state_mode=0o700),
     "boring-sourcecache-d365": Spec([CONFIG, INDEX]),
+    "boring-mcp-ferry": Spec([CONFIG]),
 }
 
 

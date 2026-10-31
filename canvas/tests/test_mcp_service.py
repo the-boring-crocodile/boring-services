@@ -28,7 +28,7 @@ from boring_service_kit.pond import ControlPlane, Registration
 from boring_canvas.mcp_service import MAX_ANSWER_BYTES, build_server, compact_elements
 from boring_canvas.storage import CanvasStore
 
-from canvas_fixtures import legacy_ownerless_canvas
+from canvas_fixtures import backdate, legacy_ownerless_canvas
 
 OWN_URL = "http://127.0.0.1:18511/mcp"
 PUBLIC = "https://canvas.example"
@@ -243,6 +243,7 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         await self.lifespan.__aexit__(None, None, None)
         self.cp.close()
+        self.store.close()
         self._tmp.cleanup()
 
     async def call(self, tool: str, arguments: dict[str, Any], token: str | None = "good",
@@ -355,7 +356,9 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         svg = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>'
         self.assertEqual(await self.call_ok("push_scene", {"name": "canvas1", "svg": svg}),
                          {"ok": True})
-        self.assertEqual(await self.call_ok("get_elements", {"name": "canvas1"}), {"elements": []})
+        self.assertEqual(await self.call_ok("get_elements", {"name": "canvas1"}),
+                         {"elements": [], "svg_coordinates": "unavailable: no browser has placed "
+                                                             "the pushed drawing yet (or it was deleted)"})
         self.assertEqual(await self.call_ok("get_edits", {"name": "canvas1"}),
                          {"edits": [], "omitted": 0})
         self.assertIn(svg[:20], self.store.find_named("pondA", "canvas1").scene_svg)
@@ -386,8 +389,7 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         # Another Pond's canvas of the same name is not found, and stays.
         self.assertEqual(await self.call_ok("delete_canvas", {"name": "mine"}), {"deleted": True})
         self.assertEqual(len(self.store.list_canvases()), 1)
-        self.assertFalse((self.store.state_dir / f"{mine_a}.json").exists())
-        self.assertTrue((self.store.state_dir / f"{mine_b}.json").exists())
+        self.assertEqual([c["canvas_id"] for c in self.store.list_canvases()], [mine_b])
         self.assertEqual(self.store.find_named("pondB", "mine").canvas_id, mine_b)
         self.assertEqual((await self.call_refused("delete_canvas", {"name": "mine"}))["code"],
                          "not_found")
@@ -482,13 +484,10 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_expiry_frees_the_name(self) -> None:
         old = await self.call_ok("create_canvas", {"name": "canvas1"})
         old_id = self.store.find_named("pondA", "canvas1").canvas_id
-        path = self.store.state_dir / f"{old_id}.json"
-        data = json.loads(path.read_text())
-        data["created_s"] = time.time() - (self.store.max_age_days + 1) * 86400
-        path.write_text(json.dumps(data))
+        backdate(self.store, old_id, (self.store.max_age_days + 1) * 86400)
         new = await self.call_ok("create_canvas", {"name": "canvas1"})  # sweeps first
         self.assertNotEqual(new["url"], old["url"])
-        self.assertFalse(path.exists())
+        self.assertNotIn(old_id, [c["canvas_id"] for c in self.store.list_canvases()])
         listed = (await self.call_ok("list_canvases", {}))["canvases"]
         self.assertEqual([c["url"] for c in listed], [new["url"]])
 
@@ -522,6 +521,86 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(json.dumps(answer["edits"], separators=(",", ":"))),
                              MAX_ANSWER_BYTES)
 
+    async def test_svg_mapping_requires_the_placement_scene_version(self) -> None:
+        canvas_id, token = self.named("pondA", "canvas1")
+        old = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="10" height="10"/></svg>'
+        new = '<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 1000 1000"><rect width="100" height="100"/></svg>'
+        await self.call_ok("push_scene", {"name": "canvas1", "svg": old})
+        version = self.store.scene_version(canvas_id)
+        image = _element("boring-canvas-pushed-scene", "image", x=0, y=0, width=100, height=100,
+                         scale=[1, 1], crop=None, customData={"boringCanvasSceneVersion": version})
+        mark = _element("annotation", "rectangle", x=10, y=10, width=10, height=10)
+        self.store.write_elements(canvas_id, token, json.dumps([image, mark]))
+        before = await self.call_ok("get_elements", {"name": "canvas1"})
+        self.assertEqual(before["elements"][1]["svg"]["x"], 10)
+        await self.call_ok("push_scene", {"name": "canvas1", "svg": old})
+        self.assertEqual(self.store.scene_version(canvas_id), version)
+        self.assertEqual((await self.call_ok("get_elements", {"name": "canvas1"}))["elements"][1]["svg"]["x"], 10)
+        saved = self.store.read(canvas_id).elements_json
+        await self.call_ok("push_scene", {"name": "canvas1", "svg": new})
+        self.assertEqual(self.store.read(canvas_id).elements_json, saved)
+        stale = await self.call_ok("get_elements", {"name": "canvas1"})
+        self.assertIn("placement", stale["svg_coordinates"])
+        self.assertNotIn("svg", stale["elements"][1])
+        current_image = dict(image, width=200, height=200,
+                             customData={"boringCanvasSceneVersion": self.store.scene_version(canvas_id)})
+        self.store.write_elements(canvas_id, token, json.dumps([current_image, mark]))
+        placed = await self.call_ok("get_elements", {"name": "canvas1"})
+        self.assertEqual(placed["elements"][1]["svg"]["x"], 50)
+        # An old tab's delayed save never claims placement of the new SVG.
+        self.store.write_elements(canvas_id, token, saved)
+        delayed = await self.call_ok("get_elements", {"name": "canvas1"})
+        self.assertIn("placement", delayed["svg_coordinates"])
+        self.assertEqual(delayed["elements"][1]["id"], "annotation")
+        legacy = dict(image)
+        legacy.pop("customData")
+        self.store.write_elements(canvas_id, token, json.dumps([legacy, mark]))
+        self.assertIn("placement", (await self.call_ok("get_elements", {"name": "canvas1"}))["svg_coordinates"])
+
+    async def test_get_elements_gives_marks_in_the_pushed_svgs_coordinates(self) -> None:
+        canvas_id, token = self.named("pondA", "canvas1")
+        await self.call_ok("push_scene", {"name": "canvas1", "svg":
+                                          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="10 20 400 200">'
+                                          '<rect x="10" y="20" width="10" height="10"/></svg>'})
+        pushed = _element("boring-canvas-pushed-scene", "image", x=1000, y=500, width=800, height=400,
+                          scale=[1, 1], crop=None,
+                          customData={"boringCanvasSceneVersion": self.store.scene_version(canvas_id)})
+        mark = _element("m1", "ellipse", x=1200, y=600, width=100, height=40)
+        self.store.write_elements(canvas_id, token, json.dumps([pushed, mark]))
+        answer = await self.call_ok("get_elements", {"name": "canvas1"})
+        self.assertEqual(answer["drawing"], {"element_id": "boring-canvas-pushed-scene",
+                                             "viewBox": [10.0, 20.0, 400.0, 200.0]})
+        image, ellipse = answer["elements"]
+        self.assertNotIn("svg", image)
+        self.assertEqual(ellipse["x"], 1200)  # the canvas-pixel fields keep their meaning
+        self.assertEqual(ellipse["svg"], {"x": 110.0, "y": 70.0, "width": 50.0, "height": 20.0})
+        rotated = dict(pushed, angle=0.5)
+        self.store.write_elements(canvas_id, token, json.dumps([rotated, mark]))
+        answer = await self.call_ok("get_elements", {"name": "canvas1"})
+        self.assertEqual(answer["svg_coordinates"], "unavailable: the pushed picture is rotated")
+        self.assertNotIn("svg", answer["elements"][1])
+
+    async def test_get_edits_pages_back_with_before(self) -> None:
+        canvas_id, token = self.named("pondA", "canvas1")
+        for version in range(1, 4):
+            batch = [_element(f"e{i}", "rectangle", version=version) for i in range(100)]
+            self.store.write_elements(canvas_id, token, json.dumps(batch))
+        everything = self.store.get_edits(canvas_id)
+        self.assertEqual([e["seq"] for e in everything], list(range(1, 301)))
+        seen, arguments = [], {"name": "canvas1"}
+        while True:
+            answer = await self.call_ok("get_edits", arguments)
+            seen[:0] = answer["edits"]
+            if not answer["omitted"]:
+                self.assertNotIn("before", answer)
+                break
+            self.assertEqual(answer["before"], answer["edits"][0]["seq"])
+            arguments = {"name": "canvas1", "before": answer["before"]}
+        self.assertEqual(seen, everything)
+        result = (await self.call("get_edits", {"name": "canvas1", "before": 0})).json()["result"]
+        self.assertTrue(result["isError"])
+        self.assertIn("before", result["content"][0]["text"])
+
     async def test_create_limits_are_tool_errors(self) -> None:
         self.store.create_rate_limit = 1
         await self.call_ok("create_canvas", {"name": "one"})
@@ -529,13 +608,11 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         self.store.create_rate_limit, self.store.max_canvases = 0, 1
         self.assertEqual((await self.call_refused("create_canvas", {"name": "two"}))["code"],
                          "limit")
-        # Neither refusal left a canvas behind: only the first exists, in the listing and on disk.
+        # Neither refusal left a canvas behind: only the first exists, in the listing and the store.
         listed = (await self.call_ok("list_canvases", {}))["canvases"]
         self.assertEqual([c["name"] for c in listed], ["one"])
         one = self.store.find_named("pondA", "one").canvas_id
         self.assertEqual([c["canvas_id"] for c in self.store.list_canvases()], [one])
-        canvas_files = [p.name for p in self.store.state_dir.glob("*.json") if p.name != "config.json"]
-        self.assertEqual(canvas_files, [f"{one}.json"])  # config.json is this test's own config
 
     # ---- tokens that must not pass
 

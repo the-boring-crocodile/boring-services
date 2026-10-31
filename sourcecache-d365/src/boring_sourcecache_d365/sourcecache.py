@@ -27,6 +27,8 @@ import sqlite3
 import threading
 import time
 import xml.etree.ElementTree as ET
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -56,6 +58,13 @@ ELEMENT_MAX_CHARS = 64 * 1024
 # may rightly take minutes. --stall-seconds 0 turns the guard off.
 STALL_SECONDS_DEFAULT = 300
 WARM_CHUNK = 8 * 1024 * 1024
+# Files read at once while building. A build of a full PackagesLocalDirectory is
+# disk-bound (2026-10-08, Azure storage: 16 readers 18.5x, 32 readers 36.4x);
+# the one SQLite connection stays the only writer, in walk order.
+READERS_DEFAULT, READERS_MAX = 16, 64
+VERSION = re.compile(r"[0-9]+(\.[0-9]+){1,3}")
+EVIDENCE_MAX = 500
+UNKNOWN = "unknown"
 
 SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -163,8 +172,77 @@ def classify(parts: tuple[str, ...]) -> dict[str, Any]:
     return keys
 
 
+def _read(root: Path, path: Path, wanted: set[str] | None) -> tuple[tuple[str, ...], dict[str, Any], str | None, str]:
+    """One file for the index: (parts, keys, text, outcome), outcome `indexed`,
+    `skipped` (too large, unreadable, binary) or `other_locale`. Runs in a reader
+    thread; an unexpected exception reaches the build and fails it."""
+    parts = path.relative_to(root).parts
+    keys = classify(parts)
+    if wanted and keys["kind"] == "label" and (keys["locale"] or "").lower() not in wanted:
+        return parts, keys, None, "other_locale"
+    try:
+        if path.stat().st_size > MAX_FILE_BYTES:
+            return parts, keys, None, "skipped"
+        text = _text(path.read_bytes())
+    except OSError:
+        return parts, keys, None, "skipped"
+    return parts, keys, text, "indexed" if text is not None else "skipped"
+
+
+def _reads(root: Path, wanted: set[str] | None, readers: int) -> Iterator[tuple[tuple[str, ...], dict[str, Any],
+                                                                            str | None, str]]:
+    """_read for every file of the tree, `readers` at a time, yielded in walk
+    order (so file ids are those of a sequential build). At most 2 x readers
+    files are read ahead; the first failure cancels the rest and is raised."""
+    if readers == 1:
+        for path in _walk(root):
+            yield _read(root, path, wanted)
+        return
+    with ThreadPoolExecutor(max_workers=readers, thread_name_prefix="sourcecache-read") as pool:
+        ahead: deque = deque()
+        try:
+            for path in _walk(root):
+                ahead.append(pool.submit(_read, root, path, wanted))
+                if len(ahead) >= 2 * readers:
+                    yield ahead.popleft().result()
+            while ahead:
+                yield ahead.popleft().result()
+        finally:
+            for future in ahead:
+                future.cancel()
+
+
+def _versions(versions: dict[str, str | None] | None) -> dict[str, str]:
+    """The release the snapshot is stamped with: what the operator read from the
+    installation records, never guessed. Model descriptors carry model versions
+    (ApplicationSuite 10.40.3708.49257 on 10.0.49, whose build is 10.0.2790.46),
+    so without arguments the stamp says unknown."""
+    given = {key: value.strip() for key, value in (versions or {}).items() if value and value.strip()}
+    unknown = sorted(set(given) - {"application", "platform", "release", "evidence"})
+    if unknown:
+        raise Refused("invalid_request", f"unknown version fields {unknown}")
+    for key in ("application", "platform", "release"):
+        if key in given and not VERSION.fullmatch(given[key]):
+            raise Refused("invalid_request", f"--{key}-version takes digits and dots (e.g. 10.0.2790.46)",
+                          value=given[key])
+    evidence = given.get("evidence")
+    if evidence is not None and (len(evidence) > EVIDENCE_MAX or any(ord(c) < 32 for c in evidence)):
+        raise Refused("invalid_request", f"--version-evidence: one line of at most {EVIDENCE_MAX} characters")
+    if evidence is not None and "application" not in given:
+        raise Refused("invalid_request", "--version-evidence describes --application-version: give both")
+    stamped = {"application_version": given.get("application", UNKNOWN),
+               "platform_version": given.get("platform", UNKNOWN),
+               "version_source": "build arguments" if "application" in given else UNKNOWN}
+    if "release" in given:
+        stamped["release_version"] = given["release"]
+    if evidence is not None:
+        stamped["version_evidence"] = evidence
+    return stamped
+
+
 def build(source: str, index: str, name: str, progress: Any = None,
-          locales: list[str] | None = None) -> dict[str, Any]:
+          locales: list[str] | None = None, readers: int = READERS_DEFAULT,
+          versions: dict[str, str | None] | None = None) -> dict[str, Any]:
     """Build an index of `source` (a PackagesLocalDirectory) and publish it as
     `index`, a new immutable snapshot: never replaces an existing or open index.
 
@@ -175,7 +253,14 @@ def build(source: str, index: str, name: str, progress: Any = None,
     `locales` (e.g. ["en-US", "de"], matched case-insensitively and exactly):
     label files of other languages are left out entirely -- as labels and as
     searchable text. None takes every language in the tree.
+
+    `readers`: files read at once (1..64); the content is the same for any value.
+    `versions` (application, platform, release, evidence): the release read from
+    the installation records; missing, the snapshot's versions say "unknown".
     """
+    if type(readers) is not int or not 1 <= readers <= READERS_MAX:
+        raise Refused("invalid_request", f"readers must be an integer of 1..{READERS_MAX}", value=readers)
+    stamped = _versions(versions)
     root, target = Path(source), Path(index)
     if not root.is_dir():
         raise Refused("not_found", "source folder does not exist", path=source)
@@ -194,7 +279,7 @@ def build(source: str, index: str, name: str, progress: Any = None,
     os.close(fd)
     staged = Path(temp)
     try:
-        report = _fill(root, staged, name, progress, locales)
+        report = _fill(root, staged, name, progress, locales, readers, stamped)
         try:
             os.link(staged, target)  # complete file, atomic no-overwrite publication
         except FileExistsError:
@@ -204,7 +289,8 @@ def build(source: str, index: str, name: str, progress: Any = None,
         staged.unlink(missing_ok=True)
 
 
-def _fill(root: Path, staged: Path, name: str, progress: Any, locales: list[str] | None) -> dict[str, Any]:
+def _fill(root: Path, staged: Path, name: str, progress: Any, locales: list[str] | None, readers: int,
+          stamped: dict[str, str]) -> dict[str, Any]:
     """The index content, written into the (empty) staged file; build() publishes it."""
     wanted = {locale.strip().lower() for locale in locales or [] if locale.strip()} or None
     started = time.monotonic()
@@ -220,19 +306,9 @@ def _fill(root: Path, staged: Path, name: str, progress: Any, locales: list[str]
         counts = {"files": 0, "labels": 0, "label_refs": 0, "skipped": 0, "models": 0, "skipped_other_locales": 0}
         models: dict[tuple[str, str], dict[str, Any]] = {}
         pending_refs: list[tuple[str, int, int]] = []
-        for path in _walk(root):
-            parts = path.relative_to(root).parts
-            keys = classify(parts)
-            if wanted and keys["kind"] == "label" and (keys["locale"] or "").lower() not in wanted:
+        for parts, keys, text, outcome in _reads(root, wanted, readers):
+            if outcome == "other_locale":
                 counts["skipped_other_locales"] += 1
-                continue
-            try:
-                if path.stat().st_size > MAX_FILE_BYTES:
-                    counts["skipped"] += 1
-                    continue
-                text = _text(path.read_bytes())
-            except OSError:
-                counts["skipped"] += 1
                 continue
             if text is None:
                 counts["skipped"] += 1
@@ -278,8 +354,10 @@ def _fill(root: Path, staged: Path, name: str, progress: Any, locales: list[str]
         meta = {
             "name": name,
             "snapshot_id": uuid.uuid4().hex,
-            "application_version": versions.get("ApplicationSuite"),
-            "platform_version": versions.get("ApplicationPlatform"),
+            **stamped,
+            # Model versions, labelled as such: not the release (see _versions).
+            "builder_descriptor_versions": json.dumps({key: versions.get(key) for key in
+                                                      ("ApplicationSuite", "ApplicationPlatform")}),
             "built": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "source": str(root),
             "tokenizer": "trigram",
@@ -379,9 +457,22 @@ class Index:
         return thread
 
     def stamp(self) -> dict[str, Any]:
-        return {"name": self.name, "application_version": self.meta.get("application_version"),
-                "built": self.meta.get("built"), "snapshot_id": self.meta.get("snapshot_id"),
-                "platform_version": self.meta.get("platform_version")}
+        stamp = {"name": self.name, "application_version": self.meta.get("application_version"),
+                 "built": self.meta.get("built"), "snapshot_id": self.meta.get("snapshot_id"),
+                 "platform_version": self.meta.get("platform_version"),
+                 "version_source": self._version_source()}
+        if self.meta.get("release_version"):
+            stamp["release_version"] = self.meta["release_version"]
+        return stamp
+
+    def _version_source(self) -> str:
+        """Where the stamp's versions come from. Builders before 0.1.16 took them
+        from model descriptors; a snapshot corrected by hand carries its evidence."""
+        if self.meta.get("version_source"):
+            return self.meta["version_source"]
+        if self.meta.get("version_evidence"):
+            return "installation evidence (stamped after the build)"
+        return "model descriptors (builder before 0.1.16; not the release)"
 
     # info ------------------------------------------------------------------
 

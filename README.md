@@ -1,8 +1,9 @@
 # Boring Services
 
-Four independent MCP services, for Linux and Windows. A Pond reaches them
-through its Crocodile; Visual Studio Copilot, Claude, ChatGPT or a script can
-also connect to each one directly. No service needs a Pond.
+Four independent MCP services and an optional gateway, for Linux and
+Windows. A Pond reaches services through its Crocodile; an MCP client can
+also connect directly using the service's configured authentication.
+No service needs a Pond.
 
 | Service | What it does |
 |---|---|
@@ -10,6 +11,11 @@ also connect to each one directly. No service needs a Pond.
 | [Canvas](canvas/README.md) | Drawings (Excalidraw) that agents push and people draw on in the browser |
 | [Fishmarket](fishmarket/README.md) | Temporary one-file handovers between an agent and a browser |
 | [D365 Sourcecache](sourcecache-d365/README.md) | Immutable indexes of D365 source: elements, labels, search |
+
+[MCP Ferry](mcp-ferry/README.md) carries selected backends behind four
+discovery and call tools. Use it when a client benefits from a smaller tool
+list. The backends retain their operations, permissions and running-job
+handles; the gateway forwards their results without retrying their work.
 
 All of it — code, tests, docs — was written by AI (OpenAI's models and Anthropic's Claude); Wald decided what to build, tested it, ran it and had the last word ([all of it is AI](https://github.com/the-boring-crocodile/boring-pond/blob/main/README.md#all-of-it-is-ai)).
 
@@ -112,6 +118,7 @@ names it as `../credentials/mcp-client-secret`). Then the first deploy installs 
 | all | `--config-dir DIR`: the service's configuration (`config.json`), the files it names and `credentials/` (the secrets) |
 | Canvas | `--public-url https://DOMAIN`, `--web-bind ADDRESS` (default 127.0.0.1), `--unsafe-url-auth` |
 | Fishmarket | `--edge-network NAME` (the Docker network the reverse proxy uses), `--unsafe-url-auth` |
+| MCP Ferry | none beyond `--config-dir` (`config.json`, `services/`, `credentials/`); backends are blocks in its `compose.yaml` ([mcp-ferry/README](mcp-ferry/README.md)) |
 | Sourcecache | `--index FILE` (a built snapshot) |
 
 The install creates the service account, `state/`, `config/` (a copy of

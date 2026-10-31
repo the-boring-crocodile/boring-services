@@ -1,17 +1,17 @@
 # boring-sourcecache-d365
 
-D365 source snapshots as an MCP service.
+Search D365 source and labels through MCP, from a snapshot of your development
+environment. The agent can inspect code without scanning the source tree on
+every question or having D365 installed on its own machine.
 
 ## Why
 
 Developing for Dynamics 365 Finance and Supply Chain means reading the
 standard code all the time: which table has this field, what this class
 does, which label says that. The standard source is hundreds of thousands of
-XML files in `PackagesLocalDirectory`; searching it with ordinary tools takes
-minutes or worse (on one development box, reading the whole source took 82
-minutes with the virus scanner checking every file, 5 without), and it exists only on
-a machine with D365 installed. Sourcecache indexes it once and answers in
-moments: Copilot on the development box gets it as a tool, and an agent in a
+XML files in `PackagesLocalDirectory`. Repeatedly scanning that tree can make
+storage and file scanning the slow part of a simple lookup. Sourcecache builds
+a searchable snapshot once: Copilot on the development box gets it as a tool, and an agent in a
 Linux Pond can look up standard code without any D365 installation.
 
 ## Where the source comes from
@@ -35,7 +35,15 @@ narrowed by package or model), `source_element` (one element's source) and
 `label_lookup` (a label by id or text). Standard and custom code are told
 apart by the model's publisher. The index never holds more than the tree it
 was built from; customer code goes in only if the administrator builds from a
-tree that contains it, and the snapshot stays where it was built.
+tree that contains it. Building writes a local file; the administrator decides
+where to serve it and who can query it.
+
+The trade-off is freshness: a snapshot does not follow source edits or upgrades.
+Use `source_info` to check its identity and versions before relying on an answer,
+and [build a new snapshot](#building-a-snapshot) when the source changes.
+Compiled references belong to pondNT's
+[D365 service](https://github.com/the-boring-crocodile/boring-pondnt/blob/main/docs/D365_SERVICE.md#compiled-references-and-dependencies),
+not this source-text index.
 
 ## Details
 
@@ -53,10 +61,34 @@ install (`--index FILE`): [README](../README.md#installing-on-linux).
 
 Building is a local administrator operation, never an MCP tool:
 
-    boring-sourcecache-d365 build --source PackagesLocalDirectory --db snapshot-v2.db --name application-v2
+    boring-sourcecache-d365 build --source PackagesLocalDirectory --db snapshot-v2.db --name application-v2 \
+        --application-version 10.0.2790.46 --platform-version 7.0.8199.32 --release-version 10.0.49 \
+        --version-evidence "InstallationRecords on the VHD, read 2026-10-15"
 
+Replace the example paths and version values with this environment's own.
 A snapshot gets a UUID `snapshot_id` and a receipt (name, application and
-platform versions, build time); names are unique. The build writes to a
+platform versions, build time); names are unique. Check the file, label and
+skipped counts as well: a successful build can omit unsupported or oversized
+files, and searching cannot recover content that was not indexed.
+
+**Versions.** The release a snapshot is stamped with is what you read from the
+installation's own records (InstallationRecords; decode their JSON by its BOM,
+some are UTF-16) and give as `--application-version`, `--platform-version` and
+optionally `--release-version` and `--version-evidence` (one line: where you
+read them). The builder does not guess: model descriptors carry model versions
+(ApplicationSuite 10.40.3708.49257 on 10.0.49, whose build is 10.0.2790.46),
+so without the arguments `source_info` says `unknown`, with `version_source`.
+The descriptor values are kept, labelled, as `builder_descriptor_versions`.
+Snapshots from builders before 0.1.16 carry descriptor versions;
+`source_info` says so in `version_source`.
+
+**Readers.** `--readers N` (1-64, default 16) reads N files at once; one SQLite
+connection writes them in the tree's order, so the snapshot's content is the
+same for any N. A full PackagesLocalDirectory build is disk-bound on network
+storage (measured 2026-10-08 on Azure storage: 16 readers 18.5x, 32 readers
+36.4x the reads of one); on a local disk with the files cached it changes
+little, since parsing and indexing then dominate. At most 2N files are read
+ahead. The build writes to a
 unique staging file and publishes with an atomic no-overwrite hard link, so an
 interrupted build never activates a partial snapshot (the filesystem must
 support hard links). Never replace an open index: build a new file, check it,

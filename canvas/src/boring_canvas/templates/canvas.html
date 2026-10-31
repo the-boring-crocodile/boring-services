@@ -65,6 +65,7 @@
   window.__CANVAS_ID__ = "%%CANVAS_ID%%";
   window.__AUTHED__ = %%AUTHED%%;
   window.__SCENE_SVG__ = %%SCENE_SVG_JSON%%;
+  window.__SCENE_VERSION__ = %%SCENE_VERSION_JSON%%;
   window.__ELEMENTS__ = %%ELEMENTS_JSON%%;
 
   if (window.__AUTHED__) {
@@ -219,6 +220,7 @@
           // apart). Right-click > Unlock still moves it on purpose.
           locked: true,
           fileId: PUSHED_FILE_ID, status: "pending", scale: [1, 1], crop: null,
+          customData: { boringCanvasSceneVersion: window.__SCENE_VERSION__ },
           // "pending", not "saved": PR #4011 (Excalidraw's own original
           // image-support work) describes this field as starting at
           // "pending" and only becoming "saved" once the real loading path

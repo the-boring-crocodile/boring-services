@@ -6,9 +6,10 @@ upload link and collects what they put in.
 
 ## Why
 
-An AI client cannot hand a person a file, and a person cannot hand an agent
-one: a chat carries text, and MCP tool results are no place for megabytes.
-In practice files still have to move: a release bundle to a Windows machine
+The agent's workspace and the person's browser may be on different machines.
+A chat attachment does not necessarily reach the machine where the file is
+needed, and sending megabytes through tool results is wasteful. Files still
+have to move: a release bundle to a Windows machine
 that cannot reach the Pond's host, a log or an export from a person's laptop
 into a Pond, a zip of results back. Fishmarket is the market stall between
 them: one file, one link, verified on both ends, gone when done. And as at
@@ -16,7 +17,8 @@ any good fish stall, there is a strict no-returns policy on fish.
 
 ## How it works
 
-The MCP tools carry only receipts; the bytes go over plain HTTP, streamed by a
+The MCP tools carry only receipts; the bytes use separate HTTP endpoints
+(HTTPS at the public URL), streamed by a
 small helper (`boring-fishmarket-transfer`) that reads and writes its own
 local files and never asks the server to read a path or fetch a URL.
 
@@ -44,6 +46,11 @@ OAuth/access-key verification and reader/writer permissions. No file bytes in MC
 
 ## Use
 
+Choose [agent-to-person or person-to-agent](#how-it-works), then use the helper
+below. [MCP tools](#mcp-tools) lists permissions; [Lifecycle and limits](#lifecycle-and-limits)
+explains expiry and recovery. Fishmarket is a handover, not an archive: keep the
+source file until the recipient has confirmed it arrived.
+
 Install: [README](../README.md#installing-on-linux) (`--edge-network`,
 `--unsafe-url-auth`), or natively ([CONFIGURATION](../docs/CONFIGURATION.md)),
 then `boring-fishmarket --config config.json --state-dir state`. Its public
@@ -63,11 +70,13 @@ boring-fishmarket-transfer --url https://crocodile-url.example.test/fishmarket/m
 ```
 
 Without the helper, as an agent inside a Pond: call `collection_receipt`, then
-fetch `download_url` with its token, check the hash, and acknowledge through
-MCP with the receipt's size and sha:
+fetch `download_url` with its token into a new destination, compare the local
+size and SHA-256 with the receipt, and only then acknowledge through MCP.
+For example, in a new empty working directory:
 
 ```text
 curl -fL -H "X-Fishmarket-Token: TOKEN" -o received.zip DOWNLOAD_URL
+wc -c < received.zip
 sha256sum received.zip
 ```
 

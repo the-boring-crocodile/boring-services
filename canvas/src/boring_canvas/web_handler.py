@@ -5,14 +5,12 @@ import http.server
 import json
 import secrets
 import mimetypes
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit
-from .storage import CanvasNotFound, CanvasStore, CorruptCanvas, InvalidElements, InvalidSVG, InvalidToken
-from .web_views import (render_page, page_csp, without_query, _TEMPLATE_PATH, ASSETS, _ROUTE_CANVAS, _ROUTE_SESSION, _ROUTE_SCENE, _ROUTE_VERSION, _ROUTE_ELEMENTS, _ROUTE_EDITS, _ROUTE_ROTATE, COOKIE_NAME, UNSAFE_URL_AUTH_PARAM, MAX_BODY_BYTES, _CONTENT_LENGTH)
+from .storage import CanvasNotFound, CanvasStore, InvalidElements, InvalidToken
+from .web_views import (render_page, page_csp, without_query, _TEMPLATE_PATH, ASSETS, _ROUTE_CANVAS, _ROUTE_SESSION, _ROUTE_VERSION, _ROUTE_ELEMENTS, COOKIE_NAME, MAX_BODY_BYTES, _CONTENT_LENGTH)
 
 class CanvasHandler(http.server.BaseHTTPRequestHandler):
     store: CanvasStore
     public_base_url: str | None
-    unsafe_url_auth: bool
     server_version = "boring-canvas/0.1"
 
     def log_message(self, fmt: str, *args: object) -> None:
@@ -23,7 +21,7 @@ class CanvasHandler(http.server.BaseHTTPRequestHandler):
 
         The one affected owns the information: this is
         canvas's own deploy-time setting, not something a caller (the
-        CLI, the MCP) has to know or compose -- same reasoning as
+        MCP) has to know or compose -- same reasoning as
         Nextcloud's own overwrite.cli.url. When set explicitly
         (--public-base-url), that value wins outright, since it's the
         one case where Caddy/a domain sits in front and the request's
@@ -90,12 +88,6 @@ class CanvasHandler(http.server.BaseHTTPRequestHandler):
         morsel = jar.get(COOKIE_NAME)
         return morsel.value if morsel else None
 
-    def _bearer_token(self) -> str | None:
-        auth = self.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            return auth[len("Bearer "):]
-        return None
-
     def _set_session_cookie_header(self, canvas_id: str, token: str) -> None:
         cookie: http.cookies.SimpleCookie = http.cookies.SimpleCookie()
         cookie[COOKIE_NAME] = token
@@ -156,40 +148,6 @@ class CanvasHandler(http.server.BaseHTTPRequestHandler):
             return
         token = self._cookie_token()
         authed = bool(token) and self.store.verify_token(canvas_id, token)
-        # "this-is-unsafe-dont-do-this-auth": pure convenience, click a freshly-
-        # created link and it just opens, no separate token paste.
-        # Deliberately opt-in (--unsafe-url-auth, off by default) and
-        # named for exactly what it costs -- "per-canvas token, never in
-        # the URL" still holds
-        # by default; this is a conscious, named exception to it, not
-        # a quiet weakening. A URL carrying its own token is logged
-        # anywhere the URL is (proxy/access logs, browser history,
-        # Referer headers) -- fine for "I don't want to paste a token
-        # on my own machine," not fine as a general default.
-        # A valid URL token is exchanged for the cookie on a 303 to the
-        # same path without it, so the token
-        # leaves the address bar and does not stay the URL of the page
-        # in history or bookmarks. Other query parameters (the page's
-        # own ?debug=1) are kept. Checked even with a valid cookie:
-        # open_canvas issues a new token for the same canvas. An
-        # invalid URL token is ignored, as before.
-        if self.unsafe_url_auth:
-            query = urlsplit(self.path).query
-            query_token = parse_qs(query).get(UNSAFE_URL_AUTH_PARAM, [None])[0]
-            if query_token and self.store.verify_token(canvas_id, query_token):
-                rest = [(key, value) for key, value
-                        in parse_qsl(query, keep_blank_values=True)
-                        if key != UNSAFE_URL_AUTH_PARAM]
-                location = self.path.split("?", 1)[0]
-                if rest:
-                    location += "?" + urlencode(rest)
-                self.send_response(303)
-                self.send_header("Location", location)
-                self._set_session_cookie_header(canvas_id, query_token)
-                self.send_header("Referrer-Policy", "no-referrer")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
         nonce = secrets.token_urlsafe(18)
         html = render_page(
             _TEMPLATE_PATH.read_text(encoding="utf-8"),
@@ -228,52 +186,6 @@ class CanvasHandler(http.server.BaseHTTPRequestHandler):
             return
         self._send_json(200, {"version": self.store.scene_version(canvas_id)})
 
-    # ---- POST /canvas/<id>/scene ----
-    def _push_scene(self, canvas_id: str) -> None:
-        token = self._bearer_token()
-        if not token:
-            self._send_json(401, {"error": "missing bearer token"})
-            return
-        try:  # the token is checked before an up-to-8-MiB body is read
-            if not self.store.verify_token(canvas_id, token):
-                self._send_json(401, {"error": "invalid token"})
-                return
-        except CanvasNotFound:
-            self._send_json(404, {"error": "no such canvas"})
-            return
-        svg = self._read_text_body()
-        if svg is None:
-            return
-        try:
-            self.store.write_scene(canvas_id, token, svg)
-        except CanvasNotFound:
-            self._send_json(404, {"error": "no such canvas"})
-            return
-        except InvalidToken:
-            self._send_json(401, {"error": "invalid token"})
-            return
-        except InvalidSVG as exc:
-            self._send_json(400, {"error": str(exc)})
-            return
-        self._send_json(200, {"ok": True})
-
-    # ---- GET /canvas/<id>/elements (bearer -- CLI/AI readback) ----
-    def _get_elements(self, canvas_id: str) -> None:
-        token = self._bearer_token()
-        if not token:
-            self._send_json(401, {"error": "missing bearer token"})
-            return
-        try:
-            if not self.store.verify_token(canvas_id, token):
-                self._send_json(401, {"error": "invalid token"})
-                return
-            canvas = self.store.read(canvas_id)
-        except CanvasNotFound:
-            self._send_json(404, {"error": "no such canvas"})
-            return
-        elements = json.loads(canvas.elements_json) if canvas.elements_json else []
-        self._send_json(200, {"elements": elements})
-
     # ---- POST /canvas/<id>/elements (cookie -- browser saves itself) ----
     def _post_elements(self, canvas_id: str) -> None:
         token = self._cookie_token()
@@ -303,56 +215,12 @@ class CanvasHandler(http.server.BaseHTTPRequestHandler):
             return
         self._send_json(200, {"ok": True})
 
-    # ---- GET /canvas/<id>/edits (bearer -- CLI/AI, per-element log) ----
-    def _get_edits(self, canvas_id: str) -> None:
-        token = self._bearer_token()
-        if not token:
-            self._send_json(401, {"error": "missing bearer token"})
-            return
-        try:
-            if not self.store.verify_token(canvas_id, token):
-                self._send_json(401, {"error": "invalid token"})
-                return
-        except CanvasNotFound:
-            self._send_json(404, {"error": "no such canvas"})
-            return
-        self._send_json(200, {"edits": self.store.get_edits(canvas_id)})
-
-    # ---- POST /canvas/<id>/rotate (bearer -- invalidate + reissue) ----
-    def _rotate_token(self, canvas_id: str) -> None:
-        token = self._bearer_token()
-        if not token:
-            self._send_json(401, {"error": "missing bearer token"})
-            return
-        try:
-            new_token = self.store.rotate_token(canvas_id, token)
-        except CanvasNotFound:
-            self._send_json(404, {"error": "no such canvas"})
-            return
-        except InvalidToken:
-            self._send_json(401, {"error": "invalid token"})
-            return
-        self._send_json(200, {
-            "token": new_token,
-            "url": f"{self._base_url()}/canvas/{canvas_id}",
-        })
-
     def _answer(self, route) -> None:
-        """Run a route; a failure every route can meet is answered here.
-
-        A corrupt canvas file (CorruptCanvas from storage) is a failure
-        the operator must look at, not a missing canvas: answered 500
-        with a pointer to `boring-canvas-admin list`, the reason logged
-        here and not sent to the client. A canvas deleted between route
-        match and read (or an unknown id on a route that does not check
-        itself, /session) is 404 like everywhere else."""
+        """Run a route; a canvas deleted between route match and read (or an
+        unknown id on a route that does not check itself, /session) is 404
+        like everywhere else."""
         try:
             route()
-        except CorruptCanvas as exc:
-            self.log_error("canvas file corrupt (%s): %s", self.path.split("?", 1)[0], exc)
-            self._send_json(500, {
-                "error": "the canvas file is corrupt and cannot be used; the "
-                         "operator can see why with `boring-canvas-admin list`"})
         except CanvasNotFound:
             self._send_json(404, {"error": "no such canvas"})
 
@@ -400,14 +268,6 @@ class CanvasHandler(http.server.BaseHTTPRequestHandler):
         if match:
             self._get_version(match.group(1))
             return
-        match = _ROUTE_EDITS.match(path)
-        if match:
-            self._get_edits(match.group(1))
-            return
-        match = _ROUTE_ELEMENTS.match(path)
-        if match:
-            self._get_elements(match.group(1))
-            return
         match = _ROUTE_CANVAS.match(path)
         if match:
             self._serve_page(match.group(1))
@@ -423,16 +283,8 @@ class CanvasHandler(http.server.BaseHTTPRequestHandler):
         if match:
             self._create_session(match.group(1))
             return
-        match = _ROUTE_SCENE.match(path)
-        if match:
-            self._push_scene(match.group(1))
-            return
         match = _ROUTE_ELEMENTS.match(path)
         if match:
             self._post_elements(match.group(1))
-            return
-        match = _ROUTE_ROTATE.match(path)
-        if match:
-            self._rotate_token(match.group(1))
             return
         self._send_json(404, {"error": "not found"})

@@ -105,7 +105,7 @@ def test_the_check_step_reaches_with_the_config_the_compose_file_names(monkeypat
     # check() using a name it had not bound.
     reached, ran, said = [], [], []
     monkeypatch.setattr(steps, "_service", lambda ctx, image=None: ("canvas", {"command": command}))
-    monkeypatch.setattr(steps, "_check_crocodile_reach", lambda ctx, name, path: reached.append((name, path)))
+    monkeypatch.setattr(steps, "_check_crocodile_reach", lambda ctx, name, path, override=None: reached.append((name, path)))
     ctx = types.SimpleNamespace(image="boring-canvas:9.9.9", log=said.append,
                                 release=types.SimpleNamespace(details={"module": "boring_canvas"}),
                                 run=lambda *args, **kw: ran.append(args))

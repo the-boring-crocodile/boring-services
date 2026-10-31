@@ -15,12 +15,11 @@ import urllib.request
 from pathlib import Path
 from unittest import mock
 
-from boring_canvas import storage
 from boring_canvas.admin import run, server_args, store_for
 from boring_canvas.server import make_handler
 from boring_canvas.storage import CanvasNotFound, CanvasStore
 
-from canvas_fixtures import new_canvas
+from canvas_fixtures import ClosesStores, new_canvas
 
 SERVER_CMDLINE = b"\0".join([
     b"python3", b"-m", b"boring_canvas.server",
@@ -29,24 +28,31 @@ SERVER_CMDLINE = b"\0".join([
 ])
 
 
-class ServerArgsTests(unittest.TestCase):
+class ServerArgsTests(ClosesStores):
     def test_limits_come_from_the_server_command_line(self) -> None:
         args = server_args(SERVER_CMDLINE)
         self.assertEqual(args.state_dir, Path("/data/state"))
         self.assertEqual((args.max_canvases, args.create_rate_limit, args.max_age_days),
                          (7, 3, 9.5))
 
+    def test_the_images_console_script_is_the_server_too(self) -> None:
+        """As in production: the image runs the console script, not python -m."""
+        live = b"/usr/local/bin/python\0/usr/local/bin/boring-canvas-server\0--state-dir=/data/state\0"
+        self.assertEqual(server_args(live).state_dir, Path("/data/state"))
+        self.assertEqual(server_args(b"/usr/local/bin/boring-canvas-server\0--max-canvases=7\0").max_canvases, 7)
+
     def test_another_process_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             server_args(b"/bin/sh\0-c\0sleep 1\0")
 
 
-class RunTests(unittest.TestCase):
+class RunTests(ClosesStores):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         argv = SERVER_CMDLINE.replace(b"/data/state", self.tmp.name.encode())
         self.store = store_for(server_args(argv))
+        self.addCleanup(self.store.close)
 
     def test_list_shows_every_canvas(self) -> None:
         first, _ = new_canvas(self.store)
@@ -58,11 +64,8 @@ class RunTests(unittest.TestCase):
     def test_delete_removes_the_canvas(self) -> None:
         canvas_id, _ = new_canvas(self.store)
         kept, _ = new_canvas(self.store)
-        self.assertTrue((Path(self.tmp.name) / f"{canvas_id}.json").exists())
         self.assertEqual(run("delete", canvas_id, self.store), (0, {"ok": True, "deleted": canvas_id}))
         self.assertEqual({c["canvas_id"] for c in run("list", None, self.store)[1]["canvases"]}, {kept})
-        self.assertFalse((Path(self.tmp.name) / f"{canvas_id}.json").exists())
-        self.assertTrue((Path(self.tmp.name) / f"{kept}.json").exists())
         self.assertEqual(run("delete", kept, self.store), (0, {"ok": True, "deleted": kept}))
         self.assertEqual(run("list", None, self.store)[1], {"canvases": []})
 
@@ -79,19 +82,12 @@ class RunTests(unittest.TestCase):
         self.assertEqual(result["current_canvas_count"], 1)
         self.assertIsNone(result["creates_in_current_window"])
 
-    def test_a_corrupt_canvas_is_listed_with_its_problem(self) -> None:
-        canvas_id, _ = new_canvas(self.store)
-        (Path(self.tmp.name) / f"{canvas_id}.json").write_text("{broken", encoding="utf-8")
-        (listed,) = run("list", None, self.store)[1]["canvases"]
-        self.assertIn("problem", listed)
-        self.assertIn(canvas_id, run("limits", None, self.store)[1]["corrupt_canvases"])
 
-
-class NoAdminOverHttpTests(unittest.TestCase):
+class NoAdminOverHttpTests(ClosesStores):
     def test_old_admin_routes_answer_not_found(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        store = CanvasStore(Path(tmp.name))
+        store = self.open_store(Path(tmp.name))
         canvas_id, _ = new_canvas(store)
         httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), make_handler(store, None))
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -110,19 +106,19 @@ class NoAdminOverHttpTests(unittest.TestCase):
 
 
 class InFlightWrite:
-    """A server write (browser save) held after it has read the record and
-    before it publishes it -- the window the review's D7 interleaving used."""
+    """A server write (browser save) held inside its transaction, after it
+    has read the record -- the window the review's D7 interleaving used."""
 
     def __init__(self, store: CanvasStore, canvas_id: str, token: str) -> None:
         self.paused, self.go = threading.Event(), threading.Event()
         self.error: Exception | None = None
-        real = storage._atomic_write_json
+        real = store._record_edits
 
-        def held(path, data):
+        def held(canvas_id, elements):
             if threading.current_thread() is self.thread:
                 self.paused.set()
                 self.go.wait(10)
-            real(path, data)
+            real(canvas_id, elements)
 
         def write() -> None:
             try:
@@ -130,7 +126,7 @@ class InFlightWrite:
             except Exception as exc:  # reported by the test
                 self.error = exc
 
-        self.patch = mock.patch.object(storage, "_atomic_write_json", held)
+        self.patch = mock.patch.object(store, "_record_edits", held)
         self.thread = threading.Thread(target=write, daemon=True)
 
     def __enter__(self) -> "InFlightWrite":
@@ -156,23 +152,22 @@ def admin_process(state_dir: str, *argv: str) -> subprocess.Popen:
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
 
 
-class AdminBesideTheServerTests(unittest.TestCase):
-    """Admin writes and server writes share one records lock across processes."""
+class AdminBesideTheServerTests(ClosesStores):
+    """Admin writes and server writes are transactions on one database, across processes."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.server = CanvasStore(Path(self.tmp.name))
+        self.server = self.open_store(Path(self.tmp.name))
         self.canvas_id, self.token = new_canvas(self.server)
 
     def assert_gone(self) -> None:
-        self.assertFalse((Path(self.tmp.name) / f"{self.canvas_id}.json").exists())
         with self.assertRaises(CanvasNotFound):
             self.server.verify_token(self.canvas_id, self.token)
         self.assertEqual(self.server.list_canvases(), [])
 
     def test_delete_in_another_store_waits_for_the_write_and_stays_done(self) -> None:
-        admin_store = CanvasStore(Path(self.tmp.name))
+        admin_store = self.open_store(Path(self.tmp.name))
         outcome: list = []
         with InFlightWrite(self.server, self.canvas_id, self.token) as write:
             deleter = threading.Thread(target=lambda: outcome.append(run("delete", self.canvas_id, admin_store)))
@@ -189,7 +184,7 @@ class AdminBesideTheServerTests(unittest.TestCase):
         with InFlightWrite(self.server, self.canvas_id, self.token) as write:
             admin = admin_process(self.tmp.name, "delete", self.canvas_id)
             with self.assertRaises(subprocess.TimeoutExpired):
-                admin.wait(timeout=1.5)  # blocked on the file lock the write holds
+                admin.wait(timeout=1.5)  # waiting for the write's transaction
             write.finish()
             out, err = admin.communicate(timeout=30)
         self.assertEqual(admin.returncode, 0, err)
@@ -206,8 +201,9 @@ class AdminBesideTheServerTests(unittest.TestCase):
         self.assert_gone()
 
     def test_token_reissue_is_not_undone_by_a_write_in_flight(self) -> None:
+        name = self.server.read(self.canvas_id).name  # the server's reads wait for its write
         with InFlightWrite(self.server, self.canvas_id, self.token) as write:
-            admin = admin_process(self.tmp.name, "token", self.server.read(self.canvas_id).name)
+            admin = admin_process(self.tmp.name, "token", name)
             with self.assertRaises(subprocess.TimeoutExpired):
                 admin.wait(timeout=1.5)
             write.finish()
@@ -223,13 +219,13 @@ OWNER = json.dumps(["https://crocodile-url.example.test", "pond"], separators=("
 PUBLIC = "https://crocodile-url.example.test"
 
 
-class OperatorTokenTests(unittest.TestCase):
+class OperatorTokenTests(ClosesStores):
     """In safe mode the person gets the browser token from the operator."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.store = CanvasStore(Path(self.tmp.name))
+        self.store = self.open_store(Path(self.tmp.name))
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.store, PUBLIC))
         self.httpd.RequestHandlerClass.log_message = lambda *args: None
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()

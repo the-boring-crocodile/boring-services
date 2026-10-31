@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -11,20 +13,18 @@ from pathlib import Path
 from boring_canvas import storage
 from boring_canvas.storage import (
     PUSHED_SCENE_ELEMENT_ID,
-    CanvasNotFound, CanvasStore, CorruptCanvas, InvalidElements, InvalidSVG, InvalidToken,
-    NameIndexBroken, NameTaken, RateLimited, TooManyCanvases,
+    CanvasNotFound, CanvasStore, InvalidElements, InvalidSVG, InvalidToken,
+    NameTaken, RateLimited, StoreRefused, TooManyCanvases,
 )
 
-from canvas_fixtures import legacy_ownerless_canvas, new_canvas
+from canvas_fixtures import ClosesStores, backdate, legacy_ownerless_canvas, new_canvas, push
 
 
-class CanvasStoreTests(unittest.TestCase):
+class CanvasStoreTests(ClosesStores):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.store = CanvasStore(Path(self._tmp.name))
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
+        self.addCleanup(self._tmp.cleanup)
+        self.store = self.open_store(Path(self._tmp.name))
 
     def test_create_returns_distinct_id_and_token(self) -> None:
         id_a, token_a = new_canvas(self.store)
@@ -44,29 +44,15 @@ class CanvasStoreTests(unittest.TestCase):
         with self.assertRaises(CanvasNotFound):
             self.store.read("0" * 32)
 
-    def test_write_scene_with_wrong_token_raises_and_does_not_change_state(self) -> None:
-        canvas_id, _token = new_canvas(self.store)
-        with self.assertRaises(InvalidToken):
-            self.store.write_scene(canvas_id, "wrong-token", "<svg>evil</svg>")
-        self.assertIsNone(self.store.read(canvas_id).scene_svg)
-
     def test_write_scene_with_correct_token_persists(self) -> None:
         canvas_id, token = new_canvas(self.store)
-        self.store.write_scene(canvas_id, token, "<svg>rose</svg>")
+        push(self.store, canvas_id, "<svg>rose</svg>")
         self.assertEqual(self.store.read(canvas_id).scene_svg, "<svg>rose</svg>")
-
-    def test_canvas_id_is_used_verbatim_as_filename_stem(self) -> None:
-        canvas_id, _token = new_canvas(self.store)
-        self.assertTrue((self.store.state_dir / f"{canvas_id}.json").exists())
-
-    def test_path_traversal_like_id_is_rejected(self) -> None:
-        with self.assertRaises(CanvasNotFound):
-            self.store.read("../../etc/passwd")
 
     def test_write_scene_strips_script_element(self) -> None:
         canvas_id, token = new_canvas(self.store)
         pushed = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script><circle r="1"/></svg>'
-        self.store.write_scene(canvas_id, token, pushed)
+        push(self.store, canvas_id, pushed)
         stored = self.store.read(canvas_id).scene_svg
         self.assertNotIn("script", stored)
         self.assertNotIn("alert", stored)
@@ -75,7 +61,7 @@ class CanvasStoreTests(unittest.TestCase):
     def test_write_scene_strips_event_handler_attribute(self) -> None:
         canvas_id, token = new_canvas(self.store)
         pushed = '<svg xmlns="http://www.w3.org/2000/svg"><rect onclick="alert(1)" width="1" height="1"/></svg>'
-        self.store.write_scene(canvas_id, token, pushed)
+        push(self.store, canvas_id, pushed)
         stored = self.store.read(canvas_id).scene_svg
         self.assertNotIn("onclick", stored)
         self.assertNotIn("alert", stored)
@@ -84,7 +70,7 @@ class CanvasStoreTests(unittest.TestCase):
         canvas_id, token = new_canvas(self.store)
         pushed = ('<svg xmlns="http://www.w3.org/2000/svg">'
                   '<a href="javascript:alert(1)"><rect width="1" height="1"/></a></svg>')
-        self.store.write_scene(canvas_id, token, pushed)
+        push(self.store, canvas_id, pushed)
         stored = self.store.read(canvas_id).scene_svg
         self.assertNotIn("javascript", stored)
         self.assertNotIn("alert", stored)
@@ -97,7 +83,7 @@ class CanvasStoreTests(unittest.TestCase):
                   '<foreignObject width="200" height="100">'
                   '<iframe xmlns="http://www.w3.org/1999/xhtml" src="https://evil.example/phish"/>'
                   '</foreignObject><circle r="1"/></svg>')
-        self.store.write_scene(canvas_id, token, pushed)
+        push(self.store, canvas_id, pushed)
         stored = self.store.read(canvas_id).scene_svg
         self.assertNotIn("iframe", stored)
         self.assertNotIn("evil.example", stored)
@@ -106,7 +92,7 @@ class CanvasStoreTests(unittest.TestCase):
 
     def _stored(self, pushed: str) -> str:
         canvas_id, token = new_canvas(self.store)
-        self.store.write_scene(canvas_id, token, pushed)
+        push(self.store, canvas_id, pushed)
         return self.store.read(canvas_id).scene_svg
 
     def test_write_scene_strips_obfuscated_script_uris(self) -> None:
@@ -168,7 +154,7 @@ class CanvasStoreTests(unittest.TestCase):
     def test_write_scene_leaves_clean_svg_intact(self) -> None:
         canvas_id, token = new_canvas(self.store)
         pushed = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><circle cx="5" cy="5" r="4" fill="red"/></svg>'
-        self.store.write_scene(canvas_id, token, pushed)
+        push(self.store, canvas_id, pushed)
         stored = self.store.read(canvas_id).scene_svg
         self.assertIn("circle", stored)
         self.assertIn("fill", stored)
@@ -176,7 +162,7 @@ class CanvasStoreTests(unittest.TestCase):
     def test_write_scene_rejects_malformed_xml(self) -> None:
         canvas_id, token = new_canvas(self.store)
         with self.assertRaises(InvalidSVG):
-            self.store.write_scene(canvas_id, token, "<svg><unclosed></svg>")
+            push(self.store, canvas_id, "<svg><unclosed></svg>")
         # rejected push must not have overwritten the (empty) stored state
         self.assertIsNone(self.store.read(canvas_id).scene_svg)
 
@@ -185,7 +171,7 @@ class CanvasStoreTests(unittest.TestCase):
         v_empty_1 = self.store.scene_version(canvas_id)
         v_empty_2 = self.store.scene_version(canvas_id)
         self.assertEqual(v_empty_1, v_empty_2)  # stable with no writes between
-        self.store.write_scene(canvas_id, token, '<svg xmlns="http://www.w3.org/2000/svg"/>')
+        push(self.store, canvas_id, '<svg xmlns="http://www.w3.org/2000/svg"/>')
         v_after = self.store.scene_version(canvas_id)
         self.assertNotEqual(v_empty_1, v_after)
 
@@ -209,12 +195,12 @@ class CanvasStoreTests(unittest.TestCase):
     def test_write_scene_preserves_existing_elements(self) -> None:
         canvas_id, token = new_canvas(self.store)
         self.store.write_elements(canvas_id, token, '[{"id": "a1"}]')
-        self.store.write_scene(canvas_id, token, '<svg xmlns="http://www.w3.org/2000/svg"/>')
+        push(self.store, canvas_id, '<svg xmlns="http://www.w3.org/2000/svg"/>')
         self.assertEqual(self.store.read(canvas_id).elements_json, '[{"id": "a1"}]')
 
     def test_write_elements_preserves_existing_scene_svg(self) -> None:
         canvas_id, token = new_canvas(self.store)
-        self.store.write_scene(canvas_id, token, '<svg xmlns="http://www.w3.org/2000/svg"/>')
+        push(self.store, canvas_id, '<svg xmlns="http://www.w3.org/2000/svg"/>')
         self.store.write_elements(canvas_id, token, '[{"id": "a1"}]')
         self.assertIsNotNone(self.store.read(canvas_id).scene_svg)
 
@@ -286,7 +272,7 @@ class CanvasStoreTests(unittest.TestCase):
     def test_list_canvases_reports_content_flags_without_tokens(self) -> None:
         empty_id, _ = new_canvas(self.store)
         scene_id, scene_token = new_canvas(self.store)
-        self.store.write_scene(scene_id, scene_token, '<svg xmlns="http://www.w3.org/2000/svg"/>')
+        push(self.store, scene_id, '<svg xmlns="http://www.w3.org/2000/svg"/>')
         listing = {c["canvas_id"]: c for c in self.store.list_canvases()}
         self.assertEqual(set(listing), {empty_id, scene_id})
         self.assertFalse(listing[empty_id]["has_scene"])
@@ -294,58 +280,6 @@ class CanvasStoreTests(unittest.TestCase):
         self.assertFalse(listing[scene_id]["has_elements"])
         self.assertNotIn("token_hash", listing[scene_id])
         self.assertNotIn("token", listing[scene_id])
-
-    def test_list_canvases_skips_foreign_file_name(self) -> None:
-        canvas_id, _ = new_canvas(self.store)
-        (self.store.state_dir / "not-a-canvas-id.json").write_text("not json")
-        listing = self.store.list_canvases()
-        self.assertEqual([c["canvas_id"] for c in listing], [canvas_id])
-
-    def _corrupt(self, content: str) -> str:
-        canvas_id = "c" * 32
-        (self.store.state_dir / f"{canvas_id}.json").write_text(content)
-        return canvas_id
-
-    def test_corrupt_canvas_is_listed_with_its_problem_and_logged_once(self) -> None:
-        good_id, _ = new_canvas(self.store)
-        bad_id = self._corrupt('{"token_hash": "x", "elem')
-        with self.assertLogs("boring_canvas.storage", "WARNING") as logs:
-            listing = {c["canvas_id"]: c for c in self.store.list_canvases()}
-            self.store.list_canvases()
-            self.store.sweep_expired(max_age_s=0)
-        self.assertEqual(len(logs.records), 1)
-        self.assertIn(bad_id, logs.output[0])
-        self.assertIn("not valid JSON", listing[bad_id]["problem"])
-        self.assertNotIn("problem", listing.get(good_id, {}))
-
-    def test_corrupt_canvas_is_reported_in_limits_status(self) -> None:
-        bad_id = self._corrupt("[]")
-        with self.assertLogs("boring_canvas.storage", "WARNING"):
-            status = self.store.limits_status()
-        self.assertEqual(status["corrupt_canvases"],
-                         {bad_id: "not a canvas record (no token_hash)"})
-        self.assertEqual(status["current_canvas_count"], 1)
-
-    def test_sweep_never_deletes_a_corrupt_canvas(self) -> None:
-        old_id, _ = new_canvas(self.store)
-        self._backdate(old_id, age_s=200 * 86400)
-        bad_id = self._corrupt("not json at all")
-        with self.assertLogs("boring_canvas.storage", "WARNING"):
-            deleted = self.store.sweep_expired(max_age_s=90 * 86400)
-        self.assertEqual(deleted, [old_id])  # the sweep still did its job
-        self.assertEqual((self.store.state_dir / f"{bad_id}.json").read_text(), "not json at all")
-
-    def test_read_of_corrupt_canvas_is_a_failure_not_not_found(self) -> None:
-        bad_id = self._corrupt("not json at all")
-        with self.assertRaises(CorruptCanvas):
-            self.store.read(bad_id)
-
-    def test_corrupt_canvas_disappears_from_report_once_deleted(self) -> None:
-        bad_id = self._corrupt("not json at all")
-        with self.assertLogs("boring_canvas.storage", "WARNING"):
-            self.store.limits_status()
-        self.store.delete(bad_id)
-        self.assertEqual(self.store.limits_status()["corrupt_canvases"], {})
 
     def test_delete_removes_canvas(self) -> None:
         canvas_id, _ = new_canvas(self.store)
@@ -363,48 +297,9 @@ class CanvasStoreTests(unittest.TestCase):
         self.store.delete(canvas_id)
         self.assertEqual(self.store.get_edits(canvas_id), [])
 
-    def test_rotate_token_with_correct_token_issues_new_one(self) -> None:
-        canvas_id, old_token = new_canvas(self.store)
-        new_token = self.store.rotate_token(canvas_id, old_token)
-        self.assertNotEqual(new_token, old_token)
-        self.assertTrue(self.store.verify_token(canvas_id, new_token))
-
-    def test_rotate_token_invalidates_old_token(self) -> None:
-        canvas_id, old_token = new_canvas(self.store)
-        self.store.rotate_token(canvas_id, old_token)
-        self.assertFalse(self.store.verify_token(canvas_id, old_token))
-
-    def test_rotate_token_with_wrong_token_raises_and_does_not_rotate(self) -> None:
-        canvas_id, old_token = new_canvas(self.store)
-        with self.assertRaises(InvalidToken):
-            self.store.rotate_token(canvas_id, "wrong-token")
-        self.assertTrue(self.store.verify_token(canvas_id, old_token))  # unchanged
-
-    def test_rotate_token_unknown_canvas_raises(self) -> None:
-        with self.assertRaises(CanvasNotFound):
-            self.store.rotate_token("0" * 32, "whatever")
-
-    def test_rotate_token_preserves_scene_and_elements(self) -> None:
-        canvas_id, token = new_canvas(self.store)
-        self.store.write_scene(canvas_id, token, '<svg xmlns="http://www.w3.org/2000/svg"/>')
-        self.store.write_elements(canvas_id, token, '[{"id": "a1"}]')
-        new_token = self.store.rotate_token(canvas_id, token)
-        canvas = self.store.read(canvas_id)
-        self.assertIsNotNone(canvas.scene_svg)
-        self.assertEqual(canvas.elements_json, '[{"id": "a1"}]')
-
-    def _backdate(self, canvas_id: str, age_s: float) -> None:
-        """Test helper: rewrite a canvas's created_s directly, since
-        create() always stamps the real current time and sweep_expired
-        needs canvases that are genuinely old to test against."""
-        path = self.store.state_dir / f"{canvas_id}.json"
-        data = json.loads(path.read_text())
-        data["created_s"] = time.time() - age_s
-        path.write_text(json.dumps(data))
-
     def test_sweep_expired_deletes_old_canvas(self) -> None:
         canvas_id, _ = new_canvas(self.store)
-        self._backdate(canvas_id, age_s=200 * 86400)  # 200 days old
+        backdate(self.store, canvas_id, age_s=200 * 86400)  # 200 days old
         deleted = self.store.sweep_expired(max_age_s=90 * 86400)
         self.assertEqual(deleted, [canvas_id])
         with self.assertRaises(CanvasNotFound):
@@ -412,29 +307,15 @@ class CanvasStoreTests(unittest.TestCase):
 
     def test_sweep_expired_keeps_young_canvas(self) -> None:
         canvas_id, _ = new_canvas(self.store)
-        self._backdate(canvas_id, age_s=5 * 86400)  # 5 days old
+        backdate(self.store, canvas_id, age_s=5 * 86400)  # 5 days old
         deleted = self.store.sweep_expired(max_age_s=90 * 86400)
         self.assertEqual(deleted, [])
         self.store.read(canvas_id)  # still there, doesn't raise
 
-    def test_canvas_without_created_s_is_reported_not_backfilled_or_deleted(self) -> None:
-        # A record without created_s is reported, untouched.
-        canvas_id = "0" * 32
-        path = self.store.state_dir / f"{canvas_id}.json"
-        content = json.dumps({"token_hash": "irrelevant", "scene_svg": None,
-                              "elements_json": None})
-        path.write_text(content)
-        with self.assertLogs("boring_canvas.storage", "WARNING"):
-            deleted = self.store.sweep_expired(max_age_s=0)
-        self.assertEqual(deleted, [])
-        self.assertEqual(path.read_text(), content)
-        self.assertIn(canvas_id, self.store.limits_status()["corrupt_canvases"])
-        self.assertIsNone(self.store.read(canvas_id).created_s)  # still openable
-
     def test_sweep_expired_deletes_only_what_is_actually_old(self) -> None:
         old_id, _ = new_canvas(self.store)
         young_id, _ = new_canvas(self.store)
-        self._backdate(old_id, age_s=200 * 86400)
+        backdate(self.store, old_id, age_s=200 * 86400)
         deleted = self.store.sweep_expired(max_age_s=90 * 86400)
         self.assertEqual(deleted, [old_id])
         self.store.read(young_id)  # untouched
@@ -446,7 +327,7 @@ class CanvasStoreTests(unittest.TestCase):
         # so this actually exercises what create() really calls.
         from boring_canvas.storage import DEFAULT_MAX_AGE_DAYS
         old_id, _ = new_canvas(self.store)
-        self._backdate(old_id, age_s=(DEFAULT_MAX_AGE_DAYS + 10) * 86400)
+        backdate(self.store, old_id, age_s=(DEFAULT_MAX_AGE_DAYS + 10) * 86400)
         new_canvas(self.store)  # the side effect under test -- no direct sweep_expired() call
         with self.assertRaises(CanvasNotFound):
             self.store.read(old_id)
@@ -456,25 +337,22 @@ class CanvasStoreTests(unittest.TestCase):
         # max_age_days uses that value, confirmed by actually exercising
         # create()'s side effect, not by reading the constructor argument
         # back.
-        short_lived = CanvasStore(Path(self._tmp.name) / "short", max_age_days=5)
+        short_lived = self.open_store(Path(self._tmp.name) / "short", max_age_days=5)
         old_id, _ = new_canvas(short_lived)
-        path = short_lived.state_dir / f"{old_id}.json"
-        data = json.loads(path.read_text())
-        data["created_s"] = time.time() - 10 * 86400  # 10 days: expired under 5, not under 42
-        path.write_text(json.dumps(data))
+        backdate(short_lived, old_id, 10 * 86400)  # 10 days: expired under 5, not under 42
         new_canvas(short_lived)  # triggers the sweep
         with self.assertRaises(CanvasNotFound):
             short_lived.read(old_id)
 
     def test_create_rate_limit_blocks_burst_past_the_limit(self) -> None:
-        limited = CanvasStore(Path(self._tmp.name) / "limited", create_rate_limit=2)
+        limited = self.open_store(Path(self._tmp.name) / "limited", create_rate_limit=2)
         new_canvas(limited)
         new_canvas(limited)
         with self.assertRaises(RateLimited):
             new_canvas(limited)
 
     def test_create_rate_limit_does_not_count_the_rejected_attempt(self) -> None:
-        limited = CanvasStore(Path(self._tmp.name) / "limited2", create_rate_limit=1)
+        limited = self.open_store(Path(self._tmp.name) / "limited2", create_rate_limit=1)
         new_canvas(limited)
         with self.assertRaises(RateLimited):
             new_canvas(limited)
@@ -483,13 +361,13 @@ class CanvasStoreTests(unittest.TestCase):
         self.assertEqual(len(limited.list_canvases()), 1)
 
     def test_create_rate_limit_zero_means_unlimited(self) -> None:
-        unlimited = CanvasStore(Path(self._tmp.name) / "unlimited", create_rate_limit=0)
+        unlimited = self.open_store(Path(self._tmp.name) / "unlimited", create_rate_limit=0)
         for _ in range(20):
             new_canvas(unlimited)  # would have blown a real limit; must not raise
         self.assertEqual(len(unlimited.list_canvases()), 20)
 
     def test_create_rate_limit_window_expires(self) -> None:
-        limited = CanvasStore(Path(self._tmp.name) / "windowed", create_rate_limit=1)
+        limited = self.open_store(Path(self._tmp.name) / "windowed", create_rate_limit=1)
         new_canvas(limited)
         with self.assertRaises(RateLimited):
             new_canvas(limited)
@@ -499,7 +377,7 @@ class CanvasStoreTests(unittest.TestCase):
         self.assertEqual(len(limited.list_canvases()), 2)
 
     def test_max_canvases_blocks_once_the_ceiling_is_reached(self) -> None:
-        capped = CanvasStore(Path(self._tmp.name) / "capped", max_canvases=2,
+        capped = self.open_store(Path(self._tmp.name) / "capped", max_canvases=2,
                               create_rate_limit=0)
         new_canvas(capped)
         capped.create_named("pond", "one")
@@ -509,7 +387,7 @@ class CanvasStoreTests(unittest.TestCase):
             new_canvas(capped)
 
     def test_old_ownerless_canvases_count_toward_max_canvases(self) -> None:
-        capped = CanvasStore(Path(self._tmp.name) / "legacy-cap", max_canvases=2,
+        capped = self.open_store(Path(self._tmp.name) / "legacy-cap", max_canvases=2,
                               create_rate_limit=0)
         legacy_ownerless_canvas(capped)
         new_canvas(capped)
@@ -519,10 +397,10 @@ class CanvasStoreTests(unittest.TestCase):
     def test_old_ownerless_canvas_keeps_working_until_it_expires(self) -> None:
         canvas_id, token = legacy_ownerless_canvas(self.store)
         self.assertTrue(self.store.verify_token(canvas_id, token))
-        self.store.write_scene(canvas_id, token, SVG)
+        push(self.store, canvas_id, SVG)
         self.assertIn("circle", self.store.read(canvas_id).scene_svg)
         self.assertIsNone(self.store.read(canvas_id).owner)
-        self._backdate(canvas_id, age_s=(self.store.max_age_days + 1) * 86400)
+        backdate(self.store, canvas_id, age_s=(self.store.max_age_days + 1) * 86400)
         new_canvas(self.store)  # creating sweeps
         with self.assertRaises(CanvasNotFound):
             self.store.read(canvas_id)
@@ -532,14 +410,14 @@ class CanvasStoreTests(unittest.TestCase):
         self.assertNotIn("owned_creates_in_current_window", self.store.limits_status())
 
     def test_max_canvases_zero_means_unlimited(self) -> None:
-        uncapped = CanvasStore(Path(self._tmp.name) / "uncapped", max_canvases=0,
+        uncapped = self.open_store(Path(self._tmp.name) / "uncapped", max_canvases=0,
                                 create_rate_limit=0)
         for _ in range(15):
             new_canvas(uncapped)
         self.assertEqual(len(uncapped.list_canvases()), 15)
 
     def test_max_canvases_counts_drop_after_delete(self) -> None:
-        capped = CanvasStore(Path(self._tmp.name) / "capped2", max_canvases=1,
+        capped = self.open_store(Path(self._tmp.name) / "capped2", max_canvases=1,
                               create_rate_limit=0)
         first_id, _ = new_canvas(capped)
         with self.assertRaises(TooManyCanvases):
@@ -548,7 +426,7 @@ class CanvasStoreTests(unittest.TestCase):
         new_canvas(capped)  # room again -- must not raise
 
     def test_limits_status_reports_configured_values_and_current_standing(self) -> None:
-        store = CanvasStore(Path(self._tmp.name) / "reported",
+        store = self.open_store(Path(self._tmp.name) / "reported",
                              max_age_days=7, create_rate_limit=5, max_canvases=50)
         new_canvas(store)
         new_canvas(store)
@@ -563,15 +441,13 @@ class CanvasStoreTests(unittest.TestCase):
 SVG = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>'
 
 
-class NamedCanvasTests(unittest.TestCase):
+class NamedCanvasTests(ClosesStores):
     """Named canvases per owner (Pond)."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
-        self.store = CanvasStore(Path(self._tmp.name), create_rate_limit=0)
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
+        self.addCleanup(self._tmp.cleanup)
+        self.store = self.open_store(Path(self._tmp.name), create_rate_limit=0)
 
     def test_create_named_is_found_by_owner_and_name(self) -> None:
         canvas_id, token = self.store.create_named("pondA", "canvas1")
@@ -587,7 +463,7 @@ class NamedCanvasTests(unittest.TestCase):
         b_id, _ = self.store.create_named("pondB", "canvas1")
         self.assertNotEqual(a_id, b_id)
         self.assertEqual(self.store.find_named("pondB", "canvas1").canvas_id, b_id)
-        self.assertEqual(self.store._canvas_count(), 2)
+        self.assertEqual(self.store._count(), 2)
 
     def test_unknown_name_and_other_owners_name_are_not_found(self) -> None:
         self.store.create_named("pondA", "canvas1")
@@ -601,7 +477,7 @@ class NamedCanvasTests(unittest.TestCase):
                 self.store.create_named("pondA", name)
         with self.assertRaises(ValueError):
             self.store.create_named("", "canvas1")
-        self.assertEqual(self.store._canvas_count(), 0)
+        self.assertEqual(self.store._count(), 0)
 
     def test_concurrent_same_name_creates_exactly_one_wins(self) -> None:
         start = threading.Barrier(16)
@@ -622,30 +498,8 @@ class NamedCanvasTests(unittest.TestCase):
         winners = [o for o in outcomes if isinstance(o, tuple)]
         self.assertEqual(len(winners), 1)
         self.assertEqual(len(outcomes), 16)
-        self.assertEqual(self.store._canvas_count(), 1)
+        self.assertEqual(self.store._count(), 1)
         self.assertEqual(self.store.find_named("pondA", "canvas1").canvas_id, winners[0][0])
-
-    def test_losing_the_bind_removes_the_new_file(self) -> None:
-        # Deterministic version of the race: a binder that does not hold the
-        # records lock (stores on one state dir share it since D7, so this is
-        # a hand edit or an older release) writes and binds a canvas of the
-        # same name after our early check, before our bind. The atomic bind
-        # still decides.
-        other = CanvasStore(self.store.state_dir)
-        real_bind = self.store._bind_name
-
-        def racing_bind(owner: str, name: str, canvas_id: str) -> None:
-            theirs = "e" * 32
-            storage._atomic_write_json(other._path(theirs), storage._record(storage.Canvas(
-                theirs, storage._hash_token("theirs"), None, None, time.time(), owner, name)))
-            other._bind_name(owner, name, theirs)
-            real_bind(owner, name, canvas_id)
-
-        self.store._bind_name = racing_bind  # type: ignore[method-assign]
-        with self.assertRaises(NameTaken):
-            self.store.create_named("pondA", "canvas1")
-        self.assertEqual(self.store._canvas_count(), 1)
-        self.assertEqual([e["name"] for e in self.store.list_named("pondA")], ["canvas1"])
 
     def test_list_named_shows_only_the_owners_named_canvases(self) -> None:
         legacy_ownerless_canvas(self.store)  # unnamed, ownerless
@@ -661,8 +515,7 @@ class NamedCanvasTests(unittest.TestCase):
         canvas_id, token = self.store.create_named("pondA", "canvas1")
         self.store.write_named_scene("pondA", "canvas1", SVG)
         self.store.write_elements(canvas_id, token, '[{"id": "a", "version": 1}]')
-        token = self.store.rotate_token(canvas_id, token)
-        self.store.write_scene(canvas_id, token, SVG)
+        self.store.reissue_named_token("pondA", "canvas1")
         canvas = self.store.find_named("pondA", "canvas1")
         self.assertEqual((canvas.owner, canvas.name), ("pondA", "canvas1"))
         self.assertIn("circle", canvas.scene_svg or "")
@@ -674,13 +527,11 @@ class NamedCanvasTests(unittest.TestCase):
 
     def test_expiry_frees_the_name(self) -> None:
         old_id, _ = self.store.create_named("pondA", "canvas1")
-        path = self.store.state_dir / f"{old_id}.json"
-        data = json.loads(path.read_text())
-        data["created_s"] = time.time() - 200 * 86400
-        path.write_text(json.dumps(data))
+        backdate(self.store, old_id, 200 * 86400)
         new_id, _ = self.store.create_named("pondA", "canvas1")  # sweeps first
         self.assertNotEqual(new_id, old_id)
-        self.assertFalse(path.exists())
+        with self.assertRaises(CanvasNotFound):
+            self.store.read(old_id)
         self.assertEqual(self.store.find_named("pondA", "canvas1").canvas_id, new_id)
 
     def test_delete_frees_the_name(self) -> None:
@@ -689,52 +540,17 @@ class NamedCanvasTests(unittest.TestCase):
         self.assertEqual(self.store.list_named("pondA"), [])
         self.store.create_named("pondA", "canvas1")
 
-    def test_delete_of_corrupt_named_canvas_frees_the_name(self) -> None:
-        canvas_id, _ = self.store.create_named("pondA", "canvas1")
-        (self.store.state_dir / f"{canvas_id}.json").write_text("{not json")
-        with self.assertLogs("boring_canvas.storage", "WARNING"):
-            self.assertIn("problem", self.store.list_canvases()[0])
-        self.assertIn("problem", self.store.list_named("pondA")[0])
-        self.store.delete(canvas_id)
-        self.store.create_named("pondA", "canvas1")
-
-    def test_unbound_file_is_invisible_by_name(self) -> None:
-        # A crash between writing the file and binding the name leaves this.
-        canvas_id, _ = self.store.create_named("pondA", "canvas1")
-        (self.store.state_dir / "names").rename(self.store.state_dir / "names-gone")
-        self.assertEqual(self.store.list_named("pondA"), [])
-        new_id, _ = self.store.create_named("pondA", "canvas1")
-        self.assertNotEqual(new_id, canvas_id)
-        self.store.delete(canvas_id)  # sweeping the orphan leaves the new binding alone
-        self.assertEqual(self.store.find_named("pondA", "canvas1").canvas_id, new_id)
-
-    def test_name_bound_to_missing_file_is_reported(self) -> None:
-        canvas_id, _ = self.store.create_named("pondA", "canvas1")
-        (self.store.state_dir / f"{canvas_id}.json").unlink()  # by hand, around delete()
-        with self.assertLogs("boring_canvas.storage", "ERROR"), self.assertRaises(NameIndexBroken):
-            self.store.find_named("pondA", "canvas1")
-        with self.assertLogs("boring_canvas.storage", "ERROR"):
-            self.assertIn("does not exist", self.store.list_named("pondA")[0]["problem"])
-        with self.assertLogs("boring_canvas.storage", "ERROR"), self.assertRaises(NameIndexBroken):
-            self.store.create_named("pondA", "canvas1")  # not silently repaired
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
-class CreateLockTests(unittest.TestCase):
-    """Concurrent creates cannot pass the limit checks together. The write
-    of the new file is slowed down so that, without the lock, every thread
-    would pass the checks before the first file exists."""
+class CreateLockTests(ClosesStores):
+    """Concurrent creates cannot pass the limit checks together. Minting the
+    id is slowed down so that, without the transaction, every thread would
+    pass the checks before the first row exists."""
 
     def _race(self, store: CanvasStore, threads: int) -> list[object]:
-        import boring_canvas.storage as storage
-        real_write = storage._atomic_write_json
+        real_uuid4 = storage.uuid.uuid4
 
-        def slow_write(path: Path, data: dict) -> None:
+        def slow_uuid4():
             time.sleep(0.02)
-            real_write(path, data)
+            return real_uuid4()
 
         start = threading.Barrier(threads)
         outcomes: list[object] = []
@@ -746,7 +562,7 @@ class CreateLockTests(unittest.TestCase):
             except (RateLimited, TooManyCanvases) as exc:
                 outcomes.append(exc)
 
-        storage._atomic_write_json = slow_write
+        storage.uuid.uuid4 = slow_uuid4
         try:
             workers = [threading.Thread(target=attempt, args=(i,)) for i in range(threads)]
             for t in workers:
@@ -754,101 +570,82 @@ class CreateLockTests(unittest.TestCase):
             for t in workers:
                 t.join()
         finally:
-            storage._atomic_write_json = real_write
+            storage.uuid.uuid4 = real_uuid4
         self.assertEqual(len(outcomes), threads)
         return outcomes
 
     def test_concurrent_creates_cannot_exceed_max_canvases(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            store = CanvasStore(Path(tmp), create_rate_limit=0, max_canvases=3)
-            outcomes = self._race(store, 10)
-            self.assertEqual(sum(isinstance(o, tuple) for o in outcomes), 3)
-            self.assertEqual(sum(isinstance(o, TooManyCanvases) for o in outcomes), 7)
-            self.assertEqual(store._canvas_count(), 3)
+        tmp = self.temp_dir()
+        store = self.open_store(Path(tmp), create_rate_limit=0, max_canvases=3)
+        outcomes = self._race(store, 10)
+        self.assertEqual(sum(isinstance(o, tuple) for o in outcomes), 3)
+        self.assertEqual(sum(isinstance(o, TooManyCanvases) for o in outcomes), 7)
+        self.assertEqual(store._count(), 3)
 
     def test_concurrent_creates_cannot_exceed_the_rate_limit(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            store = CanvasStore(Path(tmp), create_rate_limit=3, max_canvases=0)
-            outcomes = self._race(store, 10)
-            self.assertEqual(sum(isinstance(o, tuple) for o in outcomes), 3)
-            self.assertEqual(sum(isinstance(o, RateLimited) for o in outcomes), 7)
-            self.assertEqual(store._canvas_count(), 3)
+        tmp = self.temp_dir()
+        store = self.open_store(Path(tmp), create_rate_limit=3, max_canvases=0)
+        outcomes = self._race(store, 10)
+        self.assertEqual(sum(isinstance(o, tuple) for o in outcomes), 3)
+        self.assertEqual(sum(isinstance(o, RateLimited) for o in outcomes), 7)
+        self.assertEqual(store._count(), 3)
 
     def test_create_with_sweep_and_delete_does_not_deadlock(self) -> None:
-        # create holds the lock, sweeps, and the sweep deletes a named
-        # canvas (which also takes the names lock).
-        with tempfile.TemporaryDirectory() as tmp:
-            store = CanvasStore(Path(tmp))
-            old_id, _ = store.create_named("pondA", "old")
-            path = store.state_dir / f"{old_id}.json"
-            data = json.loads(path.read_text())
-            data["created_s"] = time.time() - (store.max_age_days + 1) * 86400
-            path.write_text(json.dumps(data))
-            done = threading.Event()
+        # create sweeps (a transaction of its own) before its own transaction.
+        tmp = self.temp_dir()
+        store = self.open_store(Path(tmp))
+        old_id, _ = store.create_named("pondA", "old")
+        backdate(store, old_id, (store.max_age_days + 1) * 86400)
+        done = threading.Event()
 
-            def create() -> None:
-                store.create_named("pondA", "new")
-                done.set()
+        def create() -> None:
+            store.create_named("pondA", "new")
+            done.set()
 
-            threading.Thread(target=create, daemon=True).start()
-            self.assertTrue(done.wait(5), "create did not finish")
-            self.assertFalse(path.exists())
+        threading.Thread(target=create, daemon=True).start()
+        self.assertTrue(done.wait(5), "create did not finish")
+        with self.assertRaises(CanvasNotFound):
+            store.read(old_id)
 
 
-class RecordLockTests(unittest.TestCase):
+class RecordLockTests(ClosesStores):
     """A browser save and an agent push racing on one record keep both."""
 
     def test_concurrent_writes_lose_nothing(self) -> None:
         import threading
-        with tempfile.TemporaryDirectory() as tmp:
-            store = CanvasStore(Path(tmp))
-            canvas_id, token = store.create_named("pondA", "canvas1")
-            svg = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>'
-            barrier = threading.Barrier(2)
+        tmp = self.temp_dir()
+        store = self.open_store(Path(tmp))
+        canvas_id, token = store.create_named("pondA", "canvas1")
+        svg = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>'
+        barrier = threading.Barrier(2)
 
-            def browser() -> None:
-                for i in range(50):
-                    barrier.wait() if i == 0 else None
-                    store.write_elements(canvas_id, token, f'[{{"id": "e{i}", "version": 1}}]')
+        def browser() -> None:
+            for i in range(50):
+                barrier.wait() if i == 0 else None
+                store.write_elements(canvas_id, token, f'[{{"id": "e{i}", "version": 1}}]')
 
-            def agent() -> None:
-                for i in range(50):
-                    barrier.wait() if i == 0 else None
-                    store.write_named_scene("pondA", "canvas1", svg)
-            threads = [threading.Thread(target=browser), threading.Thread(target=agent)]
-            for thread in threads:
-                thread.start()
-            for thread in threads:
-                thread.join()
-            canvas = store.read(canvas_id)
-            self.assertIn('"e49"', canvas.elements_json)
-            self.assertIsNotNone(canvas.scene_svg)
-            self.assertTrue(store.verify_token(canvas_id, token))
-
-
-class AtomicWriteTests(unittest.TestCase):
-    """A failed record write keeps the previous record and leaves no temp file."""
-
-    def test_failure_before_or_at_rename_cleans_up(self) -> None:
-        from unittest import mock
-        for step in ("fsync", "replace"):
-            with self.subTest(step=step), tempfile.TemporaryDirectory() as tmp:
-                path = Path(tmp) / "record.json"
-                storage._atomic_write_json(path, {"version": 1})
-                with mock.patch.object(storage.os, step, side_effect=OSError("injected")):
-                    with self.assertRaises(OSError):
-                        storage._atomic_write_json(path, {"version": 2})
-                self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"version": 1})
-                self.assertEqual([p.name for p in Path(tmp).iterdir()], ["record.json"])
+        def agent() -> None:
+            for i in range(50):
+                barrier.wait() if i == 0 else None
+                store.write_named_scene("pondA", "canvas1", svg)
+        threads = [threading.Thread(target=browser), threading.Thread(target=agent)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        canvas = store.read(canvas_id)
+        self.assertIn('"e49"', canvas.elements_json)
+        self.assertIsNotNone(canvas.scene_svg)
+        self.assertTrue(store.verify_token(canvas_id, token))
 
 
-class EditBookkeepingBoundTests(unittest.TestCase):
+class EditBookkeepingBoundTests(ClosesStores):
     """Version markers follow the stored scene, the log its 500-entry bound."""
 
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
-        self.store = CanvasStore(Path(self._tmp.name))
+        self.store = self.open_store(Path(self._tmp.name))
         self.canvas_id, self.token = new_canvas(self.store)
 
     def write(self, *elements: tuple[str, int]) -> None:
@@ -875,9 +672,131 @@ class EditBookkeepingBoundTests(unittest.TestCase):
 
     def test_a_write_to_a_canvas_deleted_elsewhere_drops_its_bookkeeping(self) -> None:
         self.write(("a", 1))
-        CanvasStore(Path(self._tmp.name)).delete(self.canvas_id)  # boring-canvas-admin's store
+        self.open_store(Path(self._tmp.name)).delete(self.canvas_id)  # boring-canvas-admin's store
         with self.assertRaises(CanvasNotFound):
             self.write(("a", 2))
         self.assertNotIn(self.canvas_id, self.store._known_versions)
         self.assertEqual(self.store.get_edits(self.canvas_id), [])
 
+
+class LegacyImportTests(ClosesStores):
+    """0.2.17 and older kept one JSON file per canvas; the first open imports them."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+
+    def legacy(self, canvas_id: str, **fields: object) -> Path:
+        record = {"token_hash": storage._hash_token("tok-" + canvas_id), "scene_svg": None,
+                  "elements_json": None, "created_s": time.time(), **fields}
+        path = self.dir / f"{canvas_id}.json"
+        path.write_text(json.dumps(record, indent=2))
+        return path
+
+    def test_files_are_imported_once_and_left_unchanged(self) -> None:
+        named = self.legacy("a" * 32, owner="pondA", name="plan", scene_svg="<svg/>",
+                            elements_json='[{"id": "x", "version": 2}]')
+        ownerless = self.legacy("b" * 32)
+        (self.dir / "names").mkdir()
+        (self.dir / "config.json").write_text("{}")  # not a canvas file: ignored
+        before = {p: p.read_bytes() for p in (named, ownerless)}
+        with self.assertLogs("boring_canvas.storage", "WARNING") as logs:
+            store = self.open_store(self.dir)
+        self.assertIn("imported 2 canvases", logs.output[0])
+        canvas = store.find_named("pondA", "plan")
+        self.assertEqual((canvas.canvas_id, canvas.scene_svg, canvas.elements_json),
+                         ("a" * 32, "<svg/>", '[{"id": "x", "version": 2}]'))
+        self.assertTrue(store.verify_token("a" * 32, "tok-" + "a" * 32))
+        self.assertIsNone(store.read("b" * 32).owner)
+        self.assertEqual({p: p.read_bytes() for p in before}, before)  # a rollback reads them
+        # A second open (the admin, a restart) imports nothing again.
+        store.delete("b" * 32)
+        again = self.open_store(self.dir)
+        with self.assertRaises(CanvasNotFound):
+            again.read("b" * 32)
+
+    def test_an_unusable_file_refuses_the_open_and_imports_nothing(self) -> None:
+        self.legacy("a" * 32)
+        (self.dir / ("c" * 32 + ".json")).write_text("{broken")
+        with self.assertRaises(StoreRefused) as caught:
+            self.open_store(self.dir)
+        self.assertIn("c" * 32 + ".json", str(caught.exception))
+        (self.dir / ("c" * 32 + ".json")).unlink()  # the operator moves it aside
+        self.assertEqual(len(self.open_store(self.dir).list_canvases()), 1)
+
+    def test_records_missing_fields_or_half_owned_are_refused(self) -> None:
+        for fields in ({"created_s": None}, {"token_hash": None}, {"owner": "pondA"},
+                       {"owner": "pondA", "name": "Bad Name"}, {"scene_svg": 3}):
+            with self.subTest(fields=fields):
+                tmp = self.temp_dir()
+                self.dir = Path(tmp)
+                self.legacy("a" * 32, **fields)
+                with self.assertRaises(StoreRefused):
+                    self.open_store(self.dir)
+
+    def test_two_files_with_one_name_are_refused(self) -> None:
+        self.legacy("a" * 32, owner="pondA", name="plan")
+        self.legacy("b" * 32, owner="pondA", name="plan")
+        with self.assertRaisesRegex(StoreRefused, "a{32}.json and b{32}.json both name pondA/plan"):
+            self.open_store(self.dir)
+        self.legacy("b" * 32, owner="pondA", name="other")
+        self.assertEqual(len(self.open_store(self.dir).list_named("pondA")), 2)
+
+    def test_unknown_schema_is_refused_unchanged(self) -> None:
+        store = self.open_store(self.dir)
+        with store._write():
+            store.db.execute("UPDATE meta SET value = '99' WHERE key = 'schema'")
+        store.close()
+        with self.assertRaises(StoreRefused):
+            self.open_store(self.dir)
+
+
+class TwoProcessesTests(ClosesStores):
+    """The admin's store beside the server's: one database, serialized writes."""
+
+    def test_saves_and_reissues_from_two_stores_are_kept_or_refused(self) -> None:
+        tmp = self.temp_dir()
+        server, admin = self.open_store(Path(tmp)), self.open_store(Path(tmp))
+        canvas_id, token = server.create_named("pondA", "canvas1")
+        errors: list[Exception] = []
+
+        def saves() -> None:
+            for i in range(40):
+                try:
+                    server.write_elements(canvas_id, token, f'[{{"id": "e{i}", "version": 1}}]')
+                except Exception as exc:  # reported below
+                    errors.append(exc)
+
+        def reissues() -> None:
+            for _ in range(40):
+                admin.reissue_named_token("pondA", "canvas1")
+
+        threads = [threading.Thread(target=saves), threading.Thread(target=reissues)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        # Once the admin reissued, the old token no longer saves: refused, never lost silently.
+        self.assertTrue(all(isinstance(e, InvalidToken) for e in errors))
+        self.assertFalse(server.verify_token(canvas_id, token))
+        # Every save that was not refused is kept: the stored scene is the last of them.
+        kept = 40 - len(errors)
+        stored = self.open_store(Path(tmp)).read(canvas_id).elements_json
+        if kept:
+            self.assertEqual([e["id"] for e in json.loads(stored)], [f"e{kept - 1}"])
+
+    def test_writes_from_two_processes_interleave_without_loss(self) -> None:
+        tmp = self.temp_dir()
+        self.open_store(Path(tmp)).close()  # schema first, then two writers
+        code = ("import sys; from pathlib import Path; from boring_canvas.storage import CanvasStore\n"
+                "s = CanvasStore(Path(sys.argv[1]), create_rate_limit=0, max_canvases=0)\n"
+                "for i in range(25): s.create_named(sys.argv[2], f'c{i}')\n")
+        procs = [subprocess.Popen([sys.executable, "-c", code, tmp, owner]) for owner in ("pondA", "pondB")]
+        self.assertEqual([p.wait(timeout=60) for p in procs], [0, 0])
+        store = self.open_store(Path(tmp))
+        self.assertEqual((len(store.list_named("pondA")), len(store.list_named("pondB"))), (25, 25))
+
+
+if __name__ == "__main__":
+    unittest.main()

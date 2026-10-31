@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boring-fishmarket"
-version = "0.1.12"
+version = "0.1.14"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "COPYING.md"]
 description = "Temporary authenticated file handovers"
 requires-python = ">=3.10"
-dependencies = ["mcp>=2.2,<2.3", "boring-service-kit>=0.7.6,<0.8", "boring-registry>=0.7.6,<0.8", "httpx2>=2.13.1,<2.14"]
+dependencies = ["mcp>=2.2,<2.3", "boring-service-kit>=0.7.10,<0.8", "boring-registry>=0.7.10,<0.8", "httpx2>=2.13.1,<2.14"]
 
 [project.scripts]
 boring-fishmarket = "boring_fishmarket.main:main"

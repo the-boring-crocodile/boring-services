@@ -17,7 +17,7 @@ from _develop import load
 _, develop = load()
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICES = ("knowledge", "canvas", "sourcecache-d365", "fishmarket")
+SERVICES = ("knowledge", "canvas", "sourcecache-d365", "fishmarket", "mcp-ferry")
 
 
 def main():

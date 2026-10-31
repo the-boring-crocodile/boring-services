@@ -34,9 +34,10 @@ from pydantic import Field
 
 from .server import UNSAFE_URL_AUTH_PARAM
 from .storage import (
-    NAME_PATTERN, Canvas, CanvasNotFound, CanvasStore, InvalidSVG, NameTaken, RateLimited,
-    TooManyCanvases,
+    EDIT_LOG_ENTRIES, NAME_PATTERN, PUSHED_SCENE_ELEMENT_ID, Canvas, CanvasNotFound, CanvasStore, InvalidSVG, NameTaken,
+    RateLimited, TooManyCanvases, scene_version_of,
 )
+from .svg_frame import Unmappable, frame_of, in_svg, view_of
 
 
 # Bound on the compact JSON of a get_elements/get_edits answer (one compact
@@ -91,6 +92,37 @@ def compact_elements(elements: Any) -> list[dict[str, Any]]:
             if isinstance(el, dict) and not el.get("isDeleted")]
 
 
+def scene_answer(elements: Any, scene_svg: str | None) -> dict[str, Any]:
+    """get_elements' answer: the compact live elements and, with a pushed SVG
+    the browser has placed, each other element's box in that SVG's own
+    coordinates (`svg`) and the SVG's viewBox (`drawing`). When the mapping is
+    not known, `svg_coordinates` says why and no `svg` fields are given."""
+    if not isinstance(elements, list):
+        raise ValueError("stored elements are not a JSON list")
+    live = [el for el in elements if isinstance(el, dict) and not el.get("isDeleted")]
+    answer: dict[str, Any] = {"elements": [compact_element(el) for el in live]}
+    if not scene_svg:
+        return answer
+    image = next((el for el in live if el.get("id") == PUSHED_SCENE_ELEMENT_ID), None)
+    try:
+        if image is None:
+            raise Unmappable("no browser has placed the pushed drawing yet (or it was deleted)")
+        placement = image.get("customData")
+        if not isinstance(placement, dict) or placement.get("boringCanvasSceneVersion") != scene_version_of(scene_svg):
+            raise Unmappable("browser placement is not confirmed for the current drawing")
+        frame = frame_of(view_of(scene_svg), image)
+    except Unmappable as exc:
+        answer["svg_coordinates"] = f"unavailable: {exc}"
+        return answer
+    answer["drawing"] = {"element_id": PUSHED_SCENE_ELEMENT_ID, **frame.view.public()}
+    for el, out in zip(live, answer["elements"]):
+        if el is not image:
+            mapped = in_svg(frame, el)
+            if mapped is not None:
+                out["svg"] = mapped
+    return answer
+
+
 # ---------------------------------------------------------------- server
 
 CanvasName = Annotated[str, Field(pattern=NAME_PATTERN, description=(
@@ -132,7 +164,7 @@ def build_server(store: CanvasStore, public_base_url: str, auth: dict[str, Any],
     server = MCPServer(
         "boring-canvas",
         title="Boring Canvas",
-        description="Chat- and CLI-driven drawable canvas (Excalidraw): push SVGs, "
+        description="Chat-driven drawable canvas (Excalidraw): push SVGs, "
                     "read back hand-drawn scenes.",
         instructions=INSTRUCTIONS + (UNSAFE_URL_INSTRUCTIONS if unsafe_url_auth else SAFE_URL_INSTRUCTIONS),
         **auth,
@@ -198,7 +230,10 @@ def build_server(store: CanvasStore, public_base_url: str, auth: dict[str, Any],
         return answer
 
     @tool("writer", description="Replace the pushed drawing of your caller's canvas `name` with an "
-                             "SVG, sanitized server-side; hand-drawn elements stay.")
+                             "SVG, sanitized server-side; hand-drawn elements stay. Through a Pond "
+                             "(service_call), pass an SVG file instead of its text: "
+                             "\"svg\": {\"$file\": {\"root\": ..., \"path\": ...}}; the Pond "
+                             "reads the file and sends its text, so it does not pass through you.")
     def push_scene(name: CanvasName, svg: str) -> dict[str, bool]:
         try:
             store.write_named_scene(caller(), name, svg)
@@ -216,49 +251,61 @@ def build_server(store: CanvasStore, public_base_url: str, auth: dict[str, Any],
         "(rad), strokeColor, backgroundColor, text, containerId (shape holding this text), "
         "groupIds, frameId, link, name, start/end (ids an arrow is bound to), "
         "startArrowhead/endArrowhead, points (line/arrow, relative to x,y). Deleted elements, "
-        "freehand points and rendering internals are left out. A scene over "
+        "freehand points and rendering internals are left out. With a pushed SVG placed in "
+        "the browser, each other element also has `svg`: its x, y, width, height (and a "
+        "line's points) in your SVG's own coordinates (its viewBox, in `drawing`), so a mark "
+        "names the box it was drawn on without arithmetic; the box is the element's unrotated "
+        "one. When that mapping is not known (the picture rotated, flipped or cropped, or the "
+        "SVG's size unknown, or browser placement belongs to another drawing version), "
+        "`svg_coordinates` says why instead. A scene over "
         f"{MAX_ANSWER_BYTES} bytes in this form is refused with code \"limit\"."))
-    def get_elements(name: CanvasName) -> dict[str, list[Any]]:
+    def get_elements(name: CanvasName) -> dict[str, Any]:
         canvas = _canvas(name)
-        elements = compact_elements(json.loads(canvas.elements_json) if canvas.elements_json else [])
-        size = _size(elements)
+        answer = scene_answer(json.loads(canvas.elements_json) if canvas.elements_json else [],
+                              canvas.scene_svg)
+        size = _size(answer)
         if size > MAX_ANSWER_BYTES:
-            raise refusal("limit", f"scene has {len(elements)} elements, {size} bytes even "
-                                    f"compact; the limit is {MAX_ANSWER_BYTES}")
-        return {"elements": elements}
+            raise refusal("limit", f"scene has {len(answer['elements'])} elements, {size} bytes "
+                                    f"even compact; the limit is {MAX_ANSWER_BYTES}")
+        return answer
 
     @tool("reader", description=(
         "List elements changed on your caller's canvas `name` since the backend last restarted "
-        "(does not persist across restarts), oldest first: element_id, type, version, is_deleted, "
-        "client_updated_ms, server_received_s; your pushed drawing (pushed_scene: true) "
-        "counts only when it was moved, resized, rotated or deleted, not when a page loads it. "
-        "Only the newest edits that fit in "
-        f"{MAX_ANSWER_BYTES} bytes are returned; `omitted` counts the older ones left out."))
-    def get_edits(name: CanvasName) -> dict[str, Any]:
+        "(does not persist across restarts), oldest first: seq, element_id, type, version, "
+        "is_deleted, client_updated_ms, server_received_s; your pushed drawing (pushed_scene: "
+        "true) counts only when it was moved, resized, rotated or deleted, not when a page "
+        "loads it. The newest edits that fit in "
+        f"{MAX_ANSWER_BYTES} bytes are returned; `omitted` counts the older ones left out, and "
+        "`before` (the seq to pass as `before` next) pages back to them. The backend keeps the "
+        f"newest {EDIT_LOG_ENTRIES} edits per canvas."))
+    def get_edits(name: CanvasName,
+                  before: Annotated[int | None, Field(ge=1, description=(
+                      "Only edits with a seq below this: the `before` of the previous answer, "
+                      "to page back."))] = None) -> dict[str, Any]:
         edits = store.get_edits(_canvas(name).canvas_id)
+        if before is not None:
+            edits = [edit for edit in edits if edit.get("seq", 0) < before]
         kept, size = 0, 0
         for edit in reversed(edits):
             size += _size(edit) + 1
             if size > MAX_ANSWER_BYTES:
                 break
             kept += 1
-        return {"edits": edits[len(edits) - kept:], "omitted": len(edits) - kept}
+        page = edits[len(edits) - kept:]
+        answer: dict[str, Any] = {"edits": page, "omitted": len(edits) - kept}
+        if answer["omitted"] and page:
+            answer["before"] = page[0]["seq"]
+        return answer
 
     @tool("reader", description=(
         "List your caller's canvases by name: name, url, created and expires (UTC, ISO 8601). "
-        f"{expiry} Other callers' canvases are not listed. An "
-        "entry that cannot be read has `problem` instead of url, created and expires."))
+        f"{expiry} Other callers' canvases are not listed."))
     def list_canvases() -> dict[str, list[dict[str, str]]]:
-        canvases = []
         max_age_s = store.max_age_days * 86400
-        for entry in store.list_named(caller()):
-            if "problem" in entry:
-                canvases.append({"name": entry["name"], "problem": entry["problem"]})
-            else:
-                canvases.append({"name": entry["name"], "url": _url(entry["canvas_id"]),
-                                 "created": _iso(entry["created_s"]),
-                                 "expires": _iso(entry["created_s"] + max_age_s)})
-        return {"canvases": canvases}
+        return {"canvases": [{"name": entry["name"], "url": _url(entry["canvas_id"]),
+                              "created": _iso(entry["created_s"]),
+                              "expires": _iso(entry["created_s"] + max_age_s)}
+                             for entry in store.list_named(caller())]}
 
     @tool("writer", description=(
         "Delete your caller's canvas `name`, with everything drawn on it; there is no undo. "
