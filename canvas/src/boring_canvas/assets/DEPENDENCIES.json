@@ -1436,17 +1436,17 @@
   },
   {
     "package": "node_modules/katex",
-    "version": "0.16.47",
+    "version": "0.18.10",
     "license": "MIT",
     "bundled": true,
-    "integrity": "sha512-Eeo8Ys1doU1z+x8AZsPpQu+p/QcZBI5PeOo7QGQdy2x2m0MU/hYagBbGOmXwr5KVbEfVuWv9LpnQWeehogurjg=="
+    "integrity": "sha512-/B6p9eY9DX7aHBfpkHdpirDTZ5QH9xTwL9y837PWuzuv41O5jFdqNQwVQEQsimY0/iVNkwBY4+4hMfhQ7d4Dbw=="
   },
   {
     "package": "node_modules/katex/node_modules/commander",
-    "version": "8.3.0",
+    "version": "15.0.0",
     "license": "MIT",
     "bundled": false,
-    "integrity": "sha512-OkTL9umf+He2DZkUq8f8J9of7yL6RJKI24dVITBmNfZBmri9zYZQrKkuXiKhyfPSu8tUhnVBB1iKXevvnlR4Ww=="
+    "integrity": "sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg=="
   },
   {
     "package": "node_modules/khroma",

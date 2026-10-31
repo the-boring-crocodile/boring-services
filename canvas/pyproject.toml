@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boring-canvas"
-version = "0.2.18"
+version = "0.2.19"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "COPYING.md"]
 description = "Chat-triggered drawable canvas"
