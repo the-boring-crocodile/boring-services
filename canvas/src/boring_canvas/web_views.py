@@ -6,6 +6,8 @@ import re
 import hashlib
 from pathlib import Path
 
+from .storage import scene_version_of
+
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "canvas.html"
 
 
@@ -60,6 +62,7 @@ def render_page(
         "AUTHED": "true" if authed else "false",
         "NONCE": nonce,
         "ASSET_REVISION": hashlib.sha256((Path(__file__).parent / "assets" / "BUILD.json").read_bytes()).hexdigest()[:16],
+        "SCENE_VERSION_JSON": json.dumps(scene_version_of(scene_svg)) if authed else "null",
         "SCENE_SVG_JSON": script_json(json.dumps(scene_svg)) if authed else "null",
         "ELEMENTS_JSON": (
             script_json(elements_json) if (authed and elements_json) else "null"
@@ -90,11 +93,8 @@ def page_csp(nonce: str) -> str:
 
 _ROUTE_CANVAS = re.compile(r"^/canvas/([0-9a-f]{32})/?$")
 _ROUTE_SESSION = re.compile(r"^/canvas/([0-9a-f]{32})/session/?$")
-_ROUTE_SCENE = re.compile(r"^/canvas/([0-9a-f]{32})/scene/?$")
 _ROUTE_VERSION = re.compile(r"^/canvas/([0-9a-f]{32})/version/?$")
 _ROUTE_ELEMENTS = re.compile(r"^/canvas/([0-9a-f]{32})/elements/?$")
-_ROUTE_EDITS = re.compile(r"^/canvas/([0-9a-f]{32})/edits/?$")
-_ROUTE_ROTATE = re.compile(r"^/canvas/([0-9a-f]{32})/rotate/?$")
 
 COOKIE_NAME = "canvas_token"
 
@@ -102,16 +102,16 @@ COOKIE_NAME = "canvas_token"
 # a URL gets pasted into Slack, screenshotted, bookmarked, shared by
 # accident. A bland "?token=..." hides what's happening; this doesn't.
 # Reuses the exact phrase already established everywhere else this
-# feature is discussed (the CLI flag's help text), rather than inventing
+# feature is discussed (the server flag's help text), rather than inventing
 # another slightly-different name.
 UNSAFE_URL_AUTH_PARAM = "this-is-unsafe-dont-do-this-auth"
 
-# Largest request body accepted (POST .../session, .../scene, .../elements),
+# Largest request body accepted (POST .../session, .../elements),
 # checked against Content-Length before a byte of the body is read. storage.py
-# has no size limit of its own; the largest legitimate bodies are a browser's
+# has no size limit of its own; the largest legitimate body is a browser's
 # elements save (freehand strokes keep every point: some hundred KB for a
-# busy drawing) and a pushed SVG (the repo's ausmalbilder.svg is 16 KB; an
-# export with embedded raster images can reach a few MB). 8 MiB is that plus
+# busy drawing; a placed SVG with embedded raster images can reach a few
+# MB). 8 MiB is that plus
 # headroom, and small enough that a stranger cannot make the shared web/MCP
 # process buffer arbitrary amounts before any token is checked.
 MAX_BODY_BYTES = 8 * 1024 * 1024
@@ -122,6 +122,6 @@ _QUERY = re.compile(r"\?\S*")  # to the next whitespace, quotes included
 
 
 def without_query(line: str) -> str:
-    """A request line for the log without its query string: an open_url carries the canvas
-    token there (--unsafe-url-auth), and logs are kept, copied and read."""
+    """A request line for the log without its query string: an old query link (before
+    0.2.13) still carries a canvas token there, and logs are kept, copied and read."""
     return _QUERY.sub("?…", line)

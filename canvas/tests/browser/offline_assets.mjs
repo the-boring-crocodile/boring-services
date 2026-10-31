@@ -1,9 +1,10 @@
 // Real editor/save/reload/export with all off-origin requests refused.
 import { createRequire } from 'node:module';
+import { openCanvas, savedElements } from './open_canvas.mjs';
 const require = createRequire(import.meta.url);
 const { firefox } = require(process.env.PLAYWRIGHT_MODULE);
 const base = process.argv[2];
-const { canvas_id: id, token } = JSON.parse(process.env.CANVAS);  // {canvas_id, token}: see new_canvas.py; no web route creates a canvas
+const { canvas_id: id, token } = JSON.parse(process.env.CANVAS);  // {canvas_id, token}: see canvas_store.py; no web route creates a canvas
 const browser = await firefox.launch();
 try {
   const context = await browser.newContext({ viewport: { width: 1200, height: 800 } });
@@ -23,10 +24,10 @@ try {
     window.__csp[key] = (window.__csp[key] || 0) + 1;
   }));
   async function open(reload = false) {
+    if (!reload) return openCanvas(page, base, id, token);
     const ready = page.waitForEvent('console', { predicate: message =>
       message.text().includes('root.render() called'), timeout: 60000 });
-    if (reload) await page.reload();
-    else await page.goto(base + '/canvas/' + id + '?this-is-unsafe-dont-do-this-auth=' + token);
+    await page.reload();
     await ready;
     await page.locator('[data-testid="toolbar-text"]').waitFor({ timeout: 30000 });
   }
@@ -36,9 +37,7 @@ try {
   await page.keyboard.type('Local assets acceptance');
   await page.keyboard.press('Escape');
   await page.waitForTimeout(1800);
-  const saved = await (await fetch(base + '/canvas/' + id + '/elements', {
-    headers: { Authorization: 'Bearer ' + token }
-  })).text();
+  const saved = JSON.stringify(savedElements(id));
   if (!saved.includes('Local assets acceptance')) throw Error('drawing did not persist');
   await open(true);
   await page.waitForTimeout(2000);

@@ -23,6 +23,9 @@ learned, with the context it holds for and the evidence. It helps a single
 Pond across conversations as much as several Ponds, and Copilot on a Windows
 box can read and write the same notebook.
 
+Sometimes the agent needs a nudge: "Try looking in the knowledge base first."
+Having a notebook does not mean it always remembers to open it.
+
 ## How it works
 
 - An **entry** is small: a title, a Markdown body, tags, the context it holds

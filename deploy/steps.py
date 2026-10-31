@@ -13,6 +13,7 @@ import inspect
 import json
 import re
 import sqlite3
+import tempfile
 from contextlib import closing
 import time
 import urllib.error
@@ -22,19 +23,54 @@ from urllib.parse import urlsplit
 
 import boring_deploy
 
+def ferry_frontends(path):
+    """Load frontend files through the image's configuration owner, without starting servers."""
+    import json
+    from pathlib import Path
+    from boring_mcp_ferry.config import read
+    return {f.name: json.load(open(f.service)) for f in read(Path(path)).frontends}
+
 SMOKE_SECONDS = 60  # how long the smoke waits for the endpoint and the registration
 REACH_HINT = ("boring-services README, Installing on Linux: 'The container itself calls the "
               "Crocodile's public URL' (name resolvable in Docker, firewall path to 443, trusted CA)")
 
 
-def _compose(ctx, *args, image=None, check=True):
+def _compose(ctx, *args, image=None, check=True, files=()):
     env = {"BORING_IMAGE": image} if image else None
-    return ctx.run("docker", "compose", "-f", str(ctx.home / "compose.yaml"), *args, env=env, check=check)
+    extra = [arg for path in files for arg in ("-f", str(path))]
+    return ctx.run("docker", "compose", "-f", str(ctx.home / "compose.yaml"), *extra, *args, env=env, check=check)
+
+
+def _without_fixed_addresses(name, service):
+    """A compose override for a one-off container of `name`: on the same networks, but none
+    of the service's fixed addresses (the running container holds them: the ferry's
+    ipv4_address). None when it has none. Needs Docker Compose 2.24 or later (`!override`)."""
+    networks = service.get("networks") or {}
+    if not any(isinstance(c, dict) and (c.get("ipv4_address") or c.get("ipv6_address"))
+               for c in networks.values()):
+        return None
+    lines = ["services:", f"  {json.dumps(name)}:", "    networks: !override"]
+    lines += [f"      {json.dumps(network)}: {{}}" for network in networks]
+    return "\n".join(lines) + "\n"
+
+
+MARKER_IMAGE = "boring-deploy-marker:render"  # renders ${BORING_IMAGE} so the deploy's service is found
 
 
 def _service(ctx, image=None):
-    config = json.loads(_compose(ctx, "config", "--format", "json", image=image).stdout)
-    (name, service), = config["services"].items()
+    """The service the deploy builds: the one service whose image is ${BORING_IMAGE}. A stack
+    may hold others beside it (the ferry's backends, each an image of its own). Found by
+    rendering ${BORING_IMAGE} as a marker no real image has, then returned as rendered with
+    `image` (the new one, for the check) when given."""
+    config = json.loads(_compose(ctx, "config", "--format", "json", image=MARKER_IMAGE).stdout)
+    ours = [(name, service) for name, service in config["services"].items()
+            if service.get("image") == MARKER_IMAGE]
+    if len(ours) != 1:
+        raise boring_deploy.Failure(f"compose.yaml must have exactly one service with image ${{BORING_IMAGE}}, "
+                                    f"found {len(ours)}", "the deploy builds and replaces only that one")
+    name, service = ours[0]
+    if image is not None:
+        service = json.loads(_compose(ctx, "config", "--format", "json", image=image).stdout)["services"][name]
     return name, service
 
 
@@ -46,7 +82,7 @@ def check(ctx):
     ctx.log(f"{name}: compose renders with {ctx.image}; {module} imports")
     inside = _config_inside(ctx, name, service)
     if inside:
-        _check_crocodile_reach(ctx, name, inside)
+        _check_crocodile_reach(ctx, name, inside, _without_fixed_addresses(name, service))
 
 
 def crocodile_reach(url, get):
@@ -72,28 +108,43 @@ def crocodile_reach(url, get):
     return None
 
 
-def _check_crocodile_reach(ctx, name, inside):
+def _check_crocodile_reach(ctx, name, inside, override=None):
     """Before the switch: from a one-off container of the new image on the stack's own
     network, user and config (`compose run`, removed again), GET the Crocodile URL the
     config registers or introspects with, as the service's own client does (httpx2,
     system trust store, no proxy environment). A config without one is not checked."""
-    code = inspect.getsource(crocodile_reach) + (
-        "import json, sys\n"
-        "c = json.load(open(sys.argv[1]))\n"
-        "url = (c.get('pond') or {}).get('url') or (c.get('oauth') or {}).get('introspection_url')\n"
-        "def get(u):\n"
-        "    import httpx2\n"
-        "    return httpx2.get(u, timeout=5, trust_env=False).status_code\n"
-        "print(json.dumps({'url': url, 'problem': url and crocodile_reach(url, get)}))\n")
-    result = _compose(ctx, "run", "--rm", "--no-deps", "-T", "--entrypoint", "python", name,
-                      "-I", "-c", code, inside, image=ctx.image)
+    code = inspect.getsource(crocodile_reach) + inspect.getsource(ferry_frontends) + """
+import json, sys
+c = json.load(open(sys.argv[1]))
+fronts = ferry_frontends(sys.argv[1]) if 'backends' in c else {'': c}
+def get(u):
+    import httpx2
+    return httpx2.get(u, timeout=5, trust_env=False).status_code
+answers = []
+for frontend, c in fronts.items():
+    urls = dict.fromkeys(u for u in ((c.get('pond') or {}).get('url'),
+                                    (c.get('oauth') or {}).get('introspection_url')) if u)
+    for url in urls:
+        answers.append({'frontend': frontend, 'url': url, 'problem': crocodile_reach(url, get)})
+print(json.dumps({'frontends': answers}))
+"""
+    run = ("run", "--rm", "--no-deps", "-T", "--entrypoint", "python", name, "-I", "-c", code, inside)
+    if override is None:
+        result = _compose(ctx, *run, image=ctx.image)
+    else:
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "one-off.yaml"
+            path.write_text(override)
+            result = _compose(ctx, *run, image=ctx.image, files=[path])
     answer = json.loads(result.stdout.strip().splitlines()[-1])
-    if not answer["url"]:
-        return
-    if answer["problem"]:
-        raise boring_deploy.Failure(f"{name}: the container cannot reach the Crocodile at {answer['url']} "
-                                    f"({answer['problem']}); nothing switched", REACH_HINT)
-    ctx.log(f"{name}: the new image reaches {answer['url']} from the stack's network")
+    for front in answer.get("frontends", [answer]):
+        if not front["url"]:
+            continue
+        label = name + (f" ({front['frontend']})" if front.get("frontend") else "")
+        if front["problem"]:
+            raise boring_deploy.Failure(f"{label}: the container cannot reach the Crocodile at {front['url']} "
+                                        f"({front['problem']}); nothing switched", REACH_HINT)
+        ctx.log(f"{label}: the new image reaches {front['url']} from the stack's network")
 
 
 def _data(ctx):
@@ -197,15 +248,17 @@ def _started(ctx, name):
     return text, instant
 
 
-def registrations(logs, since):
+def registrations(logs, since, backend=None):
     """Registration outcomes in `docker compose logs --timestamps --no-log-prefix` output,
-    oldest first, logged at or after `since` (older lines belong to an earlier process)."""
+    oldest first, logged at or after `since` (older lines belong to an earlier process).
+    `backend`: a ferry's backend, whose attempts the ferry logs with its name."""
+    marker = "MCP registration: " if backend is None else f"MCP registration of {backend}: "
     outcomes = []
     for line in logs.splitlines():
         stamp, _, message = line.partition(" ")
         instant = _instant(stamp)
-        if instant is not None and instant >= since and "MCP registration: " in message:
-            outcomes.append(message.split("MCP registration: ", 1)[1])
+        if instant is not None and instant >= since and marker in message:
+            outcomes.append(message.split(marker, 1)[1])
     return outcomes
 
 
@@ -218,6 +271,9 @@ def smoke(ctx):
     name, service = _service(ctx)
     inside = _config_inside(ctx, name, service)
     config = json.loads(_compose(ctx, "exec", "-T", name, "cat", inside).stdout) if inside else {}
+    if isinstance(config.get("backends"), dict):
+        _smoke_ferry(ctx, name, inside)
+        return
     deadline = time.monotonic() + SMOKE_SECONDS
     logs_hint = f"docker compose -f {ctx.home}/compose.yaml logs --tail 50"
     if config.get("url"):
@@ -240,5 +296,42 @@ def smoke(ctx):
                 break
             if time.monotonic() > deadline:
                 raise boring_deploy.Failure(f"no Pond registration by {name} since its start {started_text} "
+                                            f"({outcomes[-1] if outcomes else 'nothing logged'})", logs_hint)
+            time.sleep(2)
+
+
+def _smoke_ferry(ctx, name, inside):
+    """A ferry: every configured front end answers at its URL, and each one that serves a
+    Pond has its registration acknowledged since this start (the ferry names the backend).
+    Whether the backend itself answers is the heartbeat's to show, not the deploy's."""
+    logs_hint = f"docker compose -f {ctx.home}/compose.yaml logs --tail 50"
+    deadline = time.monotonic() + SMOKE_SECONDS
+    started_text, started = _started(ctx, name)
+    code = inspect.getsource(ferry_frontends) + """
+import json, sys
+fronts = ferry_frontends(sys.argv[1])
+print(json.dumps({n: {'url': c['url'], 'pond': bool(c.get('pond'))} for n, c in fronts.items()}))
+"""
+    fronts = json.loads(_compose(ctx, "exec", "-T", name, "python", "-I", "-c", code, inside).stdout)
+    for backend, front in fronts.items():
+        while True:
+            problem = endpoint_identity(front["url"])
+            if problem is None:
+                break
+            if time.monotonic() > deadline:
+                raise boring_deploy.Failure(f"{backend}: {problem}", logs_hint)
+            time.sleep(2)
+        ctx.log(f"{backend}: {front['url']} is its MCP endpoint (401 naming {metadata_url(front['url'])})")
+        if not front.get("pond"):
+            continue
+        while True:
+            logs = _compose(ctx, "logs", "--since", started_text, "--timestamps", "--no-log-prefix",
+                            "--no-color", name, check=False).stdout
+            outcomes = registrations(logs, started, backend)
+            if outcomes and outcomes[-1].startswith("registered"):
+                ctx.log(f"Pond: {backend} registered by {name} (started {started_text})")
+                break
+            if time.monotonic() > deadline:
+                raise boring_deploy.Failure(f"no Pond registration of {backend} since {name} started {started_text} "
                                             f"({outcomes[-1] if outcomes else 'nothing logged'})", logs_hint)
             time.sleep(2)

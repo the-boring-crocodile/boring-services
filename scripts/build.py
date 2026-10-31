@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _develop import load  # noqa: E402  (artifact and develop are loaded by build(), after its preflight)
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICES = ("knowledge", "canvas", "sourcecache-d365", "fishmarket")
+SERVICES = ("knowledge", "canvas", "sourcecache-d365", "fishmarket", "mcp-ferry")
 DOCKERFILE = {"fishmarket": "fishmarket/deploy/Dockerfile"}
 WINDOWS_PLATFORMS = ("win_amd64",)
 
@@ -110,6 +110,7 @@ DEPLOY = {  # what each service's deploy needs to know (RELEASE.json)
     "canvas": {"module": "boring_canvas"},
     "fishmarket": {"module": "boring_fishmarket"},
     "sourcecache-d365": {"module": "boring_sourcecache_d365"},
+    "mcp-ferry": {"module": "boring_mcp_ferry"},
 }
 
 
@@ -118,6 +119,7 @@ INSTALL = {  # services that install themselves (deploy/install.py): the release
     "knowledge": {"compose.yaml": "knowledge/deploy/compose.yaml"},
     "fishmarket": {"compose.yaml": "fishmarket/deploy/compose.yaml"},
     "sourcecache-d365": {"compose.yaml": "sourcecache-d365/deploy/compose.yaml"},
+    "mcp-ferry": {"compose.yaml": "mcp-ferry/deploy/compose.yaml"},
 }
 
 

@@ -7,7 +7,8 @@ Installs the locked dependencies (--require-hashes) into a new virtual
 environment, then boring-services from a copy of its tracked files, and runs the
 tests there. Each service gets its own environment from its own lock; the
 cross-service tests in tests/ run with knowledge, canvas and sourcecache-d365
-together. Needs uv (PATH or $UV) and the package index (or uv's cache)
+together. Test tools come from requirements-dev.txt, pinned by version, not by
+hash. Needs uv (PATH or $UV) and the package index (or uv's cache)
 for the locked wheels and pytest. Exit status 0 means every step passed.
 """
 import subprocess
@@ -20,8 +21,7 @@ from _develop import load
 _, develop = load()
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTEST = "pytest==9.1.1"
-SERVICES = ("knowledge", "canvas", "sourcecache-d365", "fishmarket")
+SERVICES = ("knowledge", "canvas", "sourcecache-d365", "fishmarket", "mcp-ferry")
 TOGETHER = ("knowledge", "canvas", "sourcecache-d365")
 
 
@@ -42,7 +42,7 @@ def main():
             python = develop.environment(develop.uv(), args.python, tmp / f"venv-{name}",
                                          [ROOT / m / "requirements.lock" for m in members], args.common_wheels,
                                          [develop.package(ROOT, tmp / f"src-{name}-{m}", m) for m in members],
-                                         constraints, [PYTEST, *(deploy_wheel(args) if name == "together" else [])])
+                                         constraints, ["-r", str(ROOT / "requirements-dev.txt"), *(deploy_wheel(args) if name == "together" else [])])
             try:
                 develop.run(python, "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests", cwd=where)
             except subprocess.CalledProcessError:

@@ -1,17 +1,28 @@
-"""Canvas state: one JSON file per canvas, atomic writes, hashed tokens.
+"""Canvas state: one SQLite database in the state directory, hashed tokens.
 
-The choices: HTTP not Pirate-IPC, one file per canvas not a database, token
-stored as a hash and never round-tripped back out.
+    meta      key/value: schema, created, imported (legacy files read at creation)
+    canvases  id, token_hash, scene_svg, elements_json, created_s, modified_s,
+              owner, name -- (owner, name) unique; both set for an MCP canvas,
+              both NULL for an ownerless one made before canvases were MCP-only
+
+The choices: HTTP not Pirate-IPC; SQLite like Knowledge and Fishmarket, which
+replaced one JSON file per canvas, a file lock and a hard-link name index
+(0.2.18); the token stored as a hash and never round-tripped back out.
+
+The server and `boring-canvas-admin` open the same database from two
+processes. Every write is one IMMEDIATE transaction, so a write that read a
+record cannot publish it after an admin delete or token reissue, and the
+count and name checks of a create are atomic with its insert.
 """
 from __future__ import annotations
 
-import hashlib
 import functools
+import hashlib
 import json
 import logging
-import os
 import re
 import secrets
+import sqlite3
 import threading
 import time
 import uuid
@@ -21,54 +32,49 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from boring_service_kit.filelock import file_lock
-
 log = logging.getLogger("boring_canvas.storage")
 
 _SVG_NS = "http://www.w3.org/2000/svg"
 ET.register_namespace("", _SVG_NS)
 
-# 42 days: good hygiene in principle, not a response to a specific
-# incident -- an absolute TTL from creation,
-# not a sliding idle-window, because canvases here get revisited across
-# multi-day working sessions (the architecture-diagram canvas, still
-# actively drawn on a day after it was made) -- a short idle timeout
-# would punish exactly that normal use. Configurable per CanvasStore
-# instance (below) and via server.py's --max-age-days -- this is only
-# the fallback when nothing else specifies a value.
+# 42 days: an absolute TTL from creation, not a sliding idle window, because
+# canvases get revisited across multi-day working sessions. Configurable per
+# CanvasStore and via server.py's --max-age-days.
 DEFAULT_MAX_AGE_DAYS = 42
 
-# A chat can create canvases, so creation is limited. Two different failure
-# modes, two different limits:
-# RATE_LIMIT catches a tight-loop burst (a bug, a retry-without-backoff,
-# a misunderstanding); MAX_CANVASES catches slow accumulation even when
-# the rate limit is respected. Both configurable, 0 means unlimited on
-# either.
+# A chat can create canvases, so creation is limited. RATE_LIMIT catches a
+# tight-loop burst; MAX_CANVASES catches slow accumulation even when the rate
+# limit is respected. 0 means unlimited on either.
 DEFAULT_CREATE_RATE_LIMIT = 10  # per RATE_LIMIT_WINDOW_S; 0 = unlimited
 RATE_LIMIT_WINDOW_S = 60
 DEFAULT_MAX_CANVASES = 100  # total existing at once; 0 = unlimited
 
-# Named canvases: a canvas created over MCP belongs
-# to the Pond that created it (`owner`, the introspected token's `sub`) and
-# has a `name` unique per owner. The pattern makes a name a safe file name,
-# so it is used as one in the name index (see _bind_name).
+# A canvas created over MCP belongs to the Pond that created it (`owner`, the
+# introspected token's `sub`) and has a `name` unique per owner.
 NAME_PATTERN = r"^[a-z0-9][a-z0-9-]{0,62}$"
 _NAME_RE = re.compile(NAME_PATTERN)
-
 
 # The id canvas.html gives the pushed drawing (PUSHED_IMAGE_ID there; a test
 # keeps the two equal) and the fields that say a person moved it.
 PUSHED_SCENE_ELEMENT_ID = "boring-canvas-pushed-scene"
 _PUSHED_GEOMETRY = ("x", "y", "width", "height", "angle", "isDeleted")
 
+DB_FILE = "canvas.sqlite"
+SCHEMA_VERSION = "1"
+SCHEMA = """
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE canvases (
+  id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, scene_svg TEXT, elements_json TEXT,
+  created_s REAL NOT NULL, modified_s REAL NOT NULL, owner TEXT, name TEXT,
+  CHECK ((owner IS NULL) = (name IS NULL)), UNIQUE (owner, name));
+"""
+# Seconds a write waits for the other process's transaction (admin beside the server).
+BUSY_TIMEOUT_S = 30
+EDIT_LOG_ENTRIES = 500  # per canvas, newest kept (get_edits)
+
 
 class CanvasNotFound(Exception):
-    """No canvas exists at this id, or the id was not one we ever issued."""
-
-
-class CorruptCanvas(Exception):
-    """A canvas file exists but cannot be used: unreadable, not JSON, or not
-    a canvas record. A failure to report, never a canvas to delete."""
+    """No canvas exists at this id or name."""
 
 
 class InvalidToken(Exception):
@@ -95,10 +101,9 @@ class NameTaken(Exception):
     """The owner already has a canvas with this name."""
 
 
-class NameIndexBroken(Exception):
-    """The name index disagrees with the canvas files (a name bound to a
-    canvas that is gone, or to one with another owner/name). A failure to
-    report, never repaired here: names/ was edited or a file removed by hand."""
+class StoreRefused(Exception):
+    """The database cannot be used by this release (unknown schema) or the
+    legacy canvas files cannot be imported. Nothing was changed."""
 
 
 @dataclass(frozen=True)
@@ -107,24 +112,21 @@ class Canvas:
     token_hash: str
     scene_svg: str | None
     elements_json: str | None
-    created_s: float | None  # None only in a malformed file; the sweep reports it
+    created_s: float
     owner: str | None = None  # Pond (token sub) of an MCP-created canvas, else None
     name: str | None = None  # set exactly when owner is
 
 
-def _record(canvas: Canvas, **changes: object) -> dict:
-    """The file content of `canvas` with `changes` applied: every write
-    keeps the fields it is not about, owner and name included."""
-    data: dict = {
-        "token_hash": canvas.token_hash,
-        "scene_svg": canvas.scene_svg,
-        "elements_json": canvas.elements_json,
-        "created_s": canvas.created_s,
-    }
-    if canvas.owner is not None:
-        data["owner"], data["name"] = canvas.owner, canvas.name
-    data.update(changes)
-    return data
+_COLUMNS = "id, token_hash, scene_svg, elements_json, created_s, owner, name"
+
+
+def _canvas(row: tuple) -> Canvas:
+    return Canvas(*row)
+
+
+def scene_version_of(scene_svg: str | None) -> str:
+    """Identity of the sanitized SVG snapshot, shared by polling, rendering and projection."""
+    return hashlib.sha256((scene_svg or "").encode("utf-8")).hexdigest()[:16]
 
 
 def _hash_token(token: str) -> str:
@@ -198,248 +200,146 @@ def _url_scheme_text(value: str) -> str:
     return _URL_IGNORED.sub("", value).lower()
 
 
-def _is_safe_id(canvas_id: str) -> bool:
-    # canvas_id always comes from uuid.uuid4().hex, which we generate
-    # ourselves in _create(). Enforcing that exact shape here means a
-    # caller-supplied id can never become a path outside state_dir, even
-    # though the only caller today is our own route matching (which already
-    # constrains it via the ^/canvas/([0-9a-f]{32})$ regex) -- defense in
-    # depth costs nothing here and matches how the Crocodile's file tools
-    # treats any path derived from caller input.
-    return len(canvas_id) == 32 and all(c in "0123456789abcdef" for c in canvas_id)
-
-
-def _load(path: Path) -> dict:
-    """Read one canvas file. FileNotFoundError passes through; anything
-    else that makes the file unusable raises CorruptCanvas with the reason."""
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        raise
-    except (OSError, UnicodeDecodeError) as exc:
-        raise CorruptCanvas(f"unreadable: {exc}") from None
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise CorruptCanvas(f"not valid JSON: {exc}") from None
-    if not isinstance(data, dict) or not isinstance(data.get("token_hash"), str):
-        raise CorruptCanvas("not a canvas record (no token_hash)")
-    return data
-
-
-def _atomic_write_json(path: Path, data: dict) -> None:
-    """Write JSON atomically and durably: temp file next to the target,
-    flushed and fsynced, then renamed over it; on POSIX the directory is
-    fsynced too, so the new name survives a crash.
-
-    os.replace() is atomic for the final swap, so a reader never sees a
-    half-written file. On any error the temp file is removed and the error
-    propagates; the target keeps its previous content unless the rename
-    already happened. This function takes no lock itself: every caller
-    in CanvasStore holds the store's records lock (CanvasStore._records),
-    which serializes all record writes, creates, deletes and the expiry
-    sweep across threads and across processes on the same state directory
-    (the server and `boring-canvas-admin`).
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{secrets.token_hex(4)}")
-    try:
-        with open(tmp, "x", encoding="utf-8") as handle:
-            handle.write(json.dumps(data, indent=2))
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-    if os.name != "nt":
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+def _legacy_records(state_dir: Path) -> Iterator[tuple]:
+    """The canvases a release before 0.2.18 stored, as rows: one file
+    <32 hex>.json per canvas in state_dir (the names/ index only repeated the
+    files' owner and name). Raises StoreRefused naming the first file that is
+    not a complete canvas record, or two files claiming one owner's name, so
+    nothing is imported half."""
+    named: dict[tuple[str, str], str] = {}
+    for path in sorted(state_dir.glob("*.json")):
+        canvas_id = path.stem
+        if not re.fullmatch(r"[0-9a-f]{32}", canvas_id):
+            continue  # not a canvas file (a service config, for example)
         try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise StoreRefused(f"legacy canvas file {path.name} cannot be read: {exc}") from None
+        problem = None
+        if not isinstance(data, dict) or not isinstance(data.get("token_hash"), str):
+            problem = "no token_hash"
+        elif not isinstance(data.get("created_s"), (int, float)) or isinstance(data["created_s"], bool):
+            problem = "no numeric created_s"
+        elif not all(data.get(k) is None or isinstance(data[k], str) for k in ("scene_svg", "elements_json")):
+            problem = "scene_svg/elements_json not text"
+        elif (data.get("owner") is None) != (data.get("name") is None) or (
+                data.get("owner") is not None and not (
+                    isinstance(data["owner"], str) and isinstance(data["name"], str)
+                    and _NAME_RE.fullmatch(data["name"]))):
+            problem = "owner and name not both set and valid"
+        if problem:
+            raise StoreRefused(f"legacy canvas file {path.name} is not a canvas record: {problem}")
+        if data.get("owner") is not None:
+            key = (data["owner"], data["name"])
+            if key in named:
+                raise StoreRefused(f"legacy canvas files {named[key]} and {path.name} both name "
+                                   f"{data['owner']}/{data['name']}; move one aside, then start again")
+            named[key] = path.name
+        yield (canvas_id, data["token_hash"], data.get("scene_svg"), data.get("elements_json"),
+               data["created_s"], path.stat().st_mtime, data.get("owner"), data.get("name"))
 
 
-EDIT_LOG_ENTRIES = 500  # per canvas, newest kept (get_edits)
-RECORDS_LOCK_FILE = ".records.lock"  # in state_dir; never removed (waiters share its inode)
-
-
-def _with_records_lock(method):
-    """Run a CanvasStore record write under the store's records lock."""
+def serialized(method):
+    """The store's thread lock: every public method holds it for its whole
+    call (one SQLite connection, shared by the server's threads)."""
     @functools.wraps(method)
-    def locked(self, *args, **kwargs):
-        with self._records():
+    def call(self, *args, **kwargs):
+        with self._lock:
             return method(self, *args, **kwargs)
-    return locked
+    return call
 
 
 class CanvasStore:
-    """One JSON file per canvas under state_dir."""
+    """Canvases in state_dir/canvas.sqlite."""
 
     def __init__(self, state_dir: Path, max_age_days: float = DEFAULT_MAX_AGE_DAYS,
                  create_rate_limit: int = DEFAULT_CREATE_RATE_LIMIT,
                  max_canvases: int = DEFAULT_MAX_CANVASES) -> None:
-        self.state_dir = state_dir
+        self.state_dir = Path(state_dir)
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.max_age_days = max_age_days
         self.create_rate_limit = create_rate_limit
         self.max_canvases = max_canvases
-        # In-memory only, deliberately: per-canvas edit log and the element
-        # versions already seen, used to detect what's new in write_elements.
-        # Does not need to survive a restart yet; resets
-        # to empty each time a fresh CanvasStore is constructed, i.e. every
-        # server restart. If that stops being acceptable, this is the one
-        # place to add persistence -- not scattered elsewhere.
+        # In memory only, deliberately: the per-canvas edit log, its sequence
+        # numbers and the element versions already seen (what is new in
+        # write_elements), and the create-rate window. A restart resets them.
         self._edit_log: dict[str, list[dict]] = {}
-        # Element id -> its version (the pushed drawing: its geometry), for
-        # the elements of the last scene stored per canvas only: bounded by
-        # that scene (itself bounded by the body cap), not by every id ever
-        # seen. The edit log is bounded separately (EDIT_LOG_ENTRIES).
+        self._edit_seq: dict[str, int] = {}
+        # Element id -> version (the pushed drawing: its geometry), for the
+        # elements of the last scene stored per canvas only.
         self._known_versions: dict[str, dict[str, object]] = {}
-        # Same in-memory-only reasoning applies to the rate-limit window --
-        # a restart resetting it is a feature here, not a gap: it means a
-        # burst right after a restart gets the same fresh allowance as any
-        # other window, not a stale grudge carried across process lifetimes.
-        # Every create is owned (MCP, a verified caller): one window.
         self._recent_creates: list[float] = []
-        # Canvas files found unusable by _scan(), id -> reason. Only so each
-        # one is logged once per process; what is reported comes from a
-        # fresh scan, never from this.
-        self._corrupt: dict[str, str] = {}
-        # Serializes check-then-unlink of a name binding (_unbind) within
-        # this process, so two deleters of one canvas cannot remove a
-        # binding someone made for a new canvas in between. Creating a
-        # binding needs no lock: os.link is atomic (see _bind_name). Taken
-        # only inside _unbind, never while waiting for _records_lock, so
-        # the order is always records lock, then names lock.
-        self._names_lock = threading.Lock()
-        # Serializes every read-modify-write of a canvas record, and create,
-        # delete and the expiry sweep. The web server and the MCP service
-        # run in threads of one process; without it a browser save and an
-        # agent's push (or a token change) racing on the same record would
-        # silently undo one of them, and concurrent creates could pass the
-        # rate and count checks together and exceed the limits. Reentrant:
-        # create runs the sweep, and the sweep runs delete. Held together
-        # with the file lock (_records), which extends it to other processes.
-        self._records_lock = threading.RLock()
-        self._records_depth = 0  # nesting of _records in the thread holding _records_lock
+        self._lock = threading.RLock()
+        self.db = sqlite3.connect(self.state_dir / DB_FILE, check_same_thread=False,
+                                  isolation_level=None, timeout=BUSY_TIMEOUT_S)
+        try:
+            self.db.execute("PRAGMA journal_mode = WAL")
+            self.db.execute("PRAGMA synchronous = FULL")  # a saved stroke survives a power cut
+            with self._write():
+                self._open_schema()
+        except BaseException:
+            self.db.close()
+            raise
+
+    def close(self) -> None:
+        self.db.close()
+
+    def _open_schema(self) -> None:
+        """Create the schema and import the legacy files on first open (one
+        transaction: two processes opening a fresh state directory import
+        once); refuse a database this release does not know."""
+        has_meta = self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'").fetchone()
+        if has_meta:
+            schema = self.db.execute("SELECT value FROM meta WHERE key='schema'").fetchone()
+            if schema is None or schema[0] != SCHEMA_VERSION:
+                raise StoreRefused(f"canvas database schema {schema[0] if schema else None}; this "
+                                   f"release reads schema {SCHEMA_VERSION}; database left unchanged")
+            return
+        for statement in SCHEMA.split(";"):
+            if statement.strip():
+                self.db.execute(statement)
+        rows = list(_legacy_records(self.state_dir))
+        self.db.executemany(f"INSERT INTO canvases ({_COLUMNS}, modified_s) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            [row[:5] + row[6:] + (row[5],) for row in rows])
+        self.db.executemany("INSERT INTO meta VALUES (?, ?)", [
+            ("schema", SCHEMA_VERSION), ("created", str(time.time())), ("imported", str(len(rows)))])
+        if rows:
+            log.warning("imported %d canvases from the legacy files in %s; the files are left "
+                        "as they were (a rollback reads them)", len(rows), self.state_dir)
 
     @contextmanager
-    def _records(self):
-        """The records lock: this process's threads (_records_lock) and every
-        process on state_dir (an exclusive lock on state_dir/.records.lock,
-        the kit's file_lock: flock, or msvcrt on Windows). `boring-canvas-admin`
-        runs beside the server; without the file lock a write that read a
-        record before an admin delete or token reissue would publish the old
-        record afterwards, undoing it. The file lock is taken once, by the
-        outermost holder: a second lock of the file from the same process
-        would wait for itself."""
-        with self._records_lock:
-            if self._records_depth:
-                self._records_depth += 1
-                try:
-                    yield
-                finally:
-                    self._records_depth -= 1
-                return
-            with file_lock(self.state_dir / RECORDS_LOCK_FILE):
-                self._records_depth = 1
-                try:
-                    yield
-                finally:
-                    self._records_depth = 0
-
-    # ---- name index: state_dir/names/<sha256(owner)>/<name>, content canvas_id
-
-    def _owner_dir(self, owner: str) -> Path:
-        # The owner is the control plane's `sub`, whose format is not ours;
-        # its digest is a safe directory name whatever it contains.
-        return self.state_dir / "names" / hashlib.sha256(owner.encode("utf-8")).hexdigest()
-
-    def _marker(self, owner: str, name: str) -> Path:
-        # ".name-" keeps every name a portable file name (Windows reserves con, nul, ...).
-        return self._owner_dir(owner) / (".name-" + name)
-
-    def _bind_name(self, owner: str, name: str, canvas_id: str) -> None:
-        """Bind name -> canvas_id for owner, or raise NameTaken. The marker
-        is written to a temp file and hard-linked into place: link() fails
-        atomically if the name exists (also across processes), and a reader
-        never sees a marker without its content."""
-        marker = self._marker(owner, name)
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        tmp = marker.with_name(f".{name}.tmp-{os.getpid()}-{secrets.token_hex(4)}")
-        tmp.write_text(canvas_id, encoding="ascii")
-        try:
-            os.link(tmp, marker)
-        except FileExistsError:
-            raise NameTaken(name) from None
-        finally:
-            tmp.unlink(missing_ok=True)
-
-    @staticmethod
-    def _marker_target(marker: Path) -> str | None:
-        try:
-            return marker.read_text(encoding="ascii")
-        except FileNotFoundError:
-            return None
-
-    def _unbind(self, marker: Path, canvas_id: str) -> None:
-        """Remove the binding at marker if (and only if) it is canvas_id's."""
-        with self._names_lock:
-            if self._marker_target(marker) == canvas_id:
-                marker.unlink(missing_ok=True)
-
-    def _unbind_everywhere(self, canvas_id: str) -> None:
-        """For a canvas whose file cannot tell its owner/name (corrupt):
-        remove any binding to it."""
-        for marker in self.state_dir.glob("names/*/*"):
-            if marker.name.startswith(".name-") and _NAME_RE.fullmatch(marker.name[6:]):
-                self._unbind(marker, canvas_id)
-
-    def _path(self, canvas_id: str) -> Path:
-        if not _is_safe_id(canvas_id):
-            raise CanvasNotFound(canvas_id)
-        return self.state_dir / f"{canvas_id}.json"
-
-    def _canvas_count(self) -> int:
-        """Cheap count -- filenames only, no content read -- reused by both
-        the max_canvases check and limits_status()'s reporting, so the two
-        can never disagree about what "current count" means."""
-        return sum(1 for p in self.state_dir.glob("*.json") if _is_safe_id(p.stem))
-
-    def _scan(self) -> Iterator[tuple[str, Path, dict | None, str | None]]:
-        """Yield (canvas_id, path, data, problem) for every canvas file.
-        A file that cannot be used comes with data None and the reason in
-        `problem` -- reported (logged once per file per process), never
-        skipped and never deleted. So does a record without created_s:
-        it could never expire, which an operator should see."""
-        for path in sorted(self.state_dir.glob("*.json")):
-            canvas_id = path.stem
-            if not _is_safe_id(canvas_id):
-                continue  # a stray/foreign file; not one of ours, skip it
+    def _write(self):
+        """One IMMEDIATE transaction: it takes SQLite's write lock up front, so
+        this process's threads (the RLock) and the other process (the busy
+        timeout) wait instead of interleaving read-modify-writes."""
+        with self._lock:
+            self.db.execute("BEGIN IMMEDIATE")
             try:
-                data = _load(path)
-                created_s = data.get("created_s")
-                if not isinstance(created_s, (int, float)) or isinstance(created_s, bool):
-                    raise CorruptCanvas("no numeric created_s, so it never expires")
-            except FileNotFoundError:
-                continue  # deleted between glob and read
-            except CorruptCanvas as exc:
-                if canvas_id not in self._corrupt:
-                    log.warning("canvas %s is corrupt and left in place: %s", canvas_id, exc)
-                self._corrupt[canvas_id] = str(exc)
-                yield canvas_id, path, None, str(exc)
-                continue
-            self._corrupt.pop(canvas_id, None)
-            yield canvas_id, path, data, None
+                yield
+            except BaseException:
+                self.db.execute("ROLLBACK")
+                raise
+            self.db.execute("COMMIT")
 
+    def _row(self, where: str, *args: object) -> Canvas:
+        row = self.db.execute(f"SELECT {_COLUMNS} FROM canvases WHERE {where}", args).fetchone()
+        if row is None:
+            raise CanvasNotFound(str(args[-1]))
+        return _canvas(row)
+
+    def _forget(self, canvas_id: str) -> None:
+        self._edit_log.pop(canvas_id, None)
+        self._edit_seq.pop(canvas_id, None)
+        self._known_versions.pop(canvas_id, None)
+
+    def _count(self) -> int:
+        return self.db.execute("SELECT count(*) FROM canvases").fetchone()[0]
+
+    @serialized
     def limits_status(self) -> dict:
-        """Current configured limits plus current standing against them --
-        meant to be reported to whoever's calling (MCP included, once that
-        exists), not just silently enforced: set by the admin, reported
-        over MCP. A caller that can see it's
-        close to a limit can behave sensibly instead of just hitting a
-        wall and guessing why."""
+        """Configured limits and current standing, reported to whoever asks."""
         now = time.time()
         recent = [t for t in self._recent_creates if now - t < RATE_LIMIT_WINDOW_S]
         return {
@@ -448,211 +348,88 @@ class CanvasStore:
             "create_rate_window_s": RATE_LIMIT_WINDOW_S,
             "creates_in_current_window": len(recent),
             "max_canvases": self.max_canvases,
-            "current_canvas_count": self._canvas_count(),
-            # Counted in current_canvas_count, never swept: an operator
-            # inspects and deletes them (`boring-canvas-admin delete <id>`).
-            "corrupt_canvases": {cid: problem for cid, _, _, problem in self._scan() if problem},
+            "current_canvas_count": self._count(),
         }
 
     def create_named(self, owner: str, name: str) -> tuple[str, str]:
         """Create a canvas owned by `owner` (a Pond, the verified MCP caller)
         under `name`, unique per owner. Returns (canvas_id, plaintext_token);
         raises ValueError (bad owner or name), NameTaken, RateLimited or
-        TooManyCanvases. The only way a canvas is created (canvases are
-        created over MCP only).
+        TooManyCanvases. The only way a canvas is created.
 
-        The plaintext token is returned exactly once, here, and never
-        again -- only its hash is ever stored or re-read.
+        The plaintext token is returned exactly once; only its hash is stored.
 
-        Sweeps expired canvases first, as a side effect:
-        "common usage triggered" cleanup, no separate
-        scheduling mechanism (no timer, no cron, no standalone sweep
-        command to remember to run). Creating is the one operation that
-        happens whenever this tool is actually being used, which makes it
-        a reasonable proxy for "periodically enough in practice" without
-        adding new infrastructure -- and critically, the trigger is "the
-        tool got used at all," not "someone happened to revisit this
-        specific old canvas," so a forgotten canvas still gets caught the
-        next time anything is created, not only if it's individually
-        visited again. (A systemd timer was the original plan;
-        deliberately dropped for this simpler shape.)
-
-        Raises RateLimited or TooManyCanvases before anything is created
-        if either configured cap (0 = unlimited) is hit -- checked after
-        the sweep, so a canvas that should already have expired doesn't
-        wrongly count against the ceiling.
-
-        Order, chosen so a crash leaves nothing that blocks a name: the
-        canvas file is written first, then the name is bound (_bind_name,
-        atomic). If the bind loses a race, the file is removed and NameTaken
-        raised. A crash between the two leaves an unbound file, invisible by
-        name, that expires like any other."""
+        Sweeps expired canvases first, in the same transaction: creating is
+        what happens whenever the tool is used at all, so a forgotten canvas
+        is caught the next time anything is created (no timer, no cron). The
+        sweep commits even when the create is then refused; the limits are
+        checked after it, so an expired canvas does not count against the
+        ceiling."""
         if not isinstance(owner, str) or not owner:
             raise ValueError("owner must be a non-empty string")
         if not _NAME_RE.fullmatch(name):
             raise ValueError(f"name does not match {NAME_PATTERN}")
-        return self._create(owner, name)
-
-    @_with_records_lock
-    def _create(self, owner: str, name: str) -> tuple[str, str]:
         self.sweep_expired(self.max_age_days * 86400)
-
-        # Early answer; the authoritative check is the bind below. A binding
-        # to a canvas that is gone is a broken index (find_named raises
-        # NameIndexBroken), reported as such, not as "name taken".
-        if self._marker(owner, name).exists():
-            try:
-                self.find_named(owner, name)
-            except CanvasNotFound:
-                pass  # unbound meanwhile; the bind below decides
-            except CorruptCanvas:
-                raise NameTaken(name) from None  # it exists, it is just unreadable
-            else:
+        with self._write():
+            if self.db.execute("SELECT 1 FROM canvases WHERE owner = ? AND name = ?",
+                               (owner, name)).fetchone():
                 raise NameTaken(name)
-
-        recent = self._recent_creates
-        if self.create_rate_limit:
+            recent = self._recent_creates
+            if self.create_rate_limit:
+                now = time.time()
+                recent[:] = [t for t in recent if now - t < RATE_LIMIT_WINDOW_S]
+                if len(recent) >= self.create_rate_limit:
+                    raise RateLimited(f"{self.create_rate_limit} canvases already created "
+                                      f"in the last {RATE_LIMIT_WINDOW_S}s")
+            if self.max_canvases and self._count() >= self.max_canvases:
+                raise TooManyCanvases(f"{self.max_canvases} canvases already exist")
+            canvas_id = uuid.uuid4().hex
+            token = secrets.token_urlsafe(32)
             now = time.time()
-            recent[:] = [t for t in recent if now - t < RATE_LIMIT_WINDOW_S]
-            if len(recent) >= self.create_rate_limit:
-                raise RateLimited(
-                    f"{self.create_rate_limit} canvases "
-                    f"already created in the last {RATE_LIMIT_WINDOW_S}s")
-
-        if self.max_canvases and self._canvas_count() >= self.max_canvases:
-            raise TooManyCanvases(f"{self.max_canvases} canvases already exist")
-
-        canvas_id = uuid.uuid4().hex
-        token = secrets.token_urlsafe(32)
-        path = self._path(canvas_id)
-        _atomic_write_json(path, _record(
-            Canvas(canvas_id, _hash_token(token), None, None, time.time(), owner, name)))
-        try:
-            self._bind_name(owner, name, canvas_id)
-        except NameTaken:
-            path.unlink()  # ours, never bound: nobody can have seen it by name
-            raise
-        if self.create_rate_limit:
-            recent.append(time.time())
+            self.db.execute(f"INSERT INTO canvases ({_COLUMNS}, modified_s) "
+                            "VALUES (?, ?, NULL, NULL, ?, ?, ?, ?)",
+                            (canvas_id, _hash_token(token), now, owner, name, now))
+            if self.create_rate_limit:
+                recent.append(now)
         return canvas_id, token
 
+    @serialized
     def read(self, canvas_id: str) -> Canvas:
-        path = self._path(canvas_id)
-        try:
-            data = _load(path)  # raises CorruptCanvas: a failure, not "not found"
-        except FileNotFoundError:
-            raise CanvasNotFound(canvas_id) from None
-        return Canvas(
-            canvas_id=canvas_id,
-            token_hash=data["token_hash"],
-            scene_svg=data.get("scene_svg"),
-            elements_json=data.get("elements_json"),
-            created_s=data.get("created_s"),
-            owner=data.get("owner") if isinstance(data.get("owner"), str) else None,
-            name=data.get("name") if isinstance(data.get("name"), str) else None,
-        )
+        return self._row("id = ?", canvas_id)
 
+    @serialized
     def find_named(self, owner: str, name: str) -> Canvas:
-        """The canvas `owner` created under `name`. Raises CanvasNotFound
-        when this owner has no such name (another owner's canvas of the
-        same name is not found either), NameIndexBroken when the index
-        and the files disagree."""
-        if not _NAME_RE.fullmatch(name):
-            raise CanvasNotFound(name)
-        marker = self._marker(owner, name)
-        canvas_id = self._marker_target(marker)
-        if canvas_id is None:
-            raise CanvasNotFound(name)
-        if not _is_safe_id(canvas_id):
-            raise self._broken(f"name {name!r} is bound to {canvas_id!r}, not a canvas id")
-        try:
-            canvas = self.read(canvas_id)
-        except CanvasNotFound:
-            if self._marker_target(marker) == canvas_id:  # still bound: file gone under it
-                raise self._broken(f"name {name!r} is bound to canvas {canvas_id}, "
-                                   "which does not exist") from None
-            raise CanvasNotFound(name) from None  # deleted meanwhile
-        if canvas.owner != owner or canvas.name != name:
-            raise self._broken(f"name {name!r} is bound to canvas {canvas_id}, "
-                               "whose file names another owner or name")
-        return canvas
+        """The canvas `owner` created under `name`; another owner's canvas of
+        the same name is not found."""
+        return self._row("owner = ? AND name = ?", owner, name)
 
-    @staticmethod
-    def _broken(message: str) -> NameIndexBroken:
-        log.error("name index: %s", message)
-        return NameIndexBroken(message)
-
+    @serialized
     def list_named(self, owner: str) -> list[dict]:
-        """The owner's named canvases, by name: {name, canvas_id, created_s},
-        or {name, problem} for one that cannot be used (reported, not hidden).
-        Bounded by max_canvases: every binding has its own canvas file."""
-        try:
-            names = sorted({p.name[6:] if p.name.startswith(".name-") else p.name
-                            for p in self._owner_dir(owner).iterdir()
-                            if _NAME_RE.fullmatch(p.name[6:] if p.name.startswith(".name-") else p.name)})
-        except FileNotFoundError:
-            return []
-        results = []
-        for name in names:
-            try:
-                canvas = self.find_named(owner, name)
-            except CanvasNotFound:
-                continue  # deleted between listing and reading
-            except (NameIndexBroken, CorruptCanvas) as exc:
-                results.append({"name": name, "problem": str(exc)})
-                continue
-            created_s = canvas.created_s
-            if not isinstance(created_s, (int, float)) or isinstance(created_s, bool):
-                results.append({"name": name, "problem": "no numeric created_s"})
-                continue
-            results.append({"name": name, "canvas_id": canvas.canvas_id,
-                            "created_s": created_s})
-        return results
+        """The owner's canvases by name: {name, canvas_id, created_s}."""
+        return [{"name": name, "canvas_id": canvas_id, "created_s": created_s}
+                for name, canvas_id, created_s in self.db.execute(
+                    "SELECT name, id, created_s FROM canvases WHERE owner = ? ORDER BY name",
+                    (owner,))]
 
     def verify_token(self, canvas_id: str, token: str) -> bool:
         canvas = self.read(canvas_id)  # raises CanvasNotFound if absent
         return secrets.compare_digest(canvas.token_hash, _hash_token(token))
 
-    @_with_records_lock
-    def write_scene(self, canvas_id: str, token: str, scene_svg: str) -> None:
-        canvas = self.read(canvas_id)
-        if not secrets.compare_digest(canvas.token_hash, _hash_token(token)):
-            raise InvalidToken(canvas_id)
-        self._store_scene(canvas, scene_svg)
-
-    @_with_records_lock
     def write_named_scene(self, owner: str, name: str, scene_svg: str) -> None:
-        """write_scene for MCP: the owner's canvas by name, no canvas token
-        (the Pond is proven by the control plane). Raises CanvasNotFound,
-        NameIndexBroken, InvalidSVG."""
-        self._store_scene(self.find_named(owner, name), scene_svg)
-
-    def _store_scene(self, canvas: Canvas, scene_svg: str) -> None:
+        """Replace the pushed drawing of the owner's canvas `name` (the Pond is
+        proven by the control plane). Raises CanvasNotFound, InvalidSVG."""
         clean = _sanitize_svg(scene_svg)  # raises InvalidSVG; never stores unsanitized
-        # elements_json, owner and name preserved: this write isn't about them
-        _atomic_write_json(self._path(canvas.canvas_id), _record(canvas, scene_svg=clean))
+        with self._write():
+            if not self.db.execute("UPDATE canvases SET scene_svg = ?, modified_s = ? "
+                                   "WHERE owner = ? AND name = ?",
+                                   (clean, time.time(), owner, name)).rowcount:
+                raise CanvasNotFound(name)
 
-    @_with_records_lock
     def write_elements(self, canvas_id: str, token: str, elements_json: str) -> None:
-        """Store the browser's current Excalidraw scene, opaquely.
-
-        Deliberately does not parse or understand Excalidraw's element
-        schema -- only the browser's own Excalidraw component needs to,
-        and guessing at that schema server-side was already rejected once
-        (a pushed SVG is a background image). Validates
-        only that it is JSON at all, so a caller's mistake is caught here
-        rather than stored as an unreadable string and discovered later.
-        """
-        try:
-            canvas = self.read(canvas_id)
-        except CanvasNotFound:
-            # Deleted, possibly by boring-canvas-admin in another process:
-            # this process's bookkeeping for it goes too.
-            self._edit_log.pop(canvas_id, None)
-            self._known_versions.pop(canvas_id, None)
-            raise
-        if not secrets.compare_digest(canvas.token_hash, _hash_token(token)):
-            raise InvalidToken(canvas_id)
+        """Store the browser's current Excalidraw scene, opaquely: only the
+        browser's Excalidraw needs to understand it. Validates only that it
+        is a JSON list, so a caller's mistake is caught here rather than
+        stored and discovered later."""
         def finite_only(constant: str) -> object:
             raise InvalidElements(f"not valid JSON: {constant} is not a number")
         try:
@@ -661,30 +438,29 @@ class CanvasStore:
             raise InvalidElements(f"not valid JSON: {exc}") from None
         if not isinstance(parsed, list):
             raise InvalidElements("elements must be a JSON list")
-        self._record_edits(canvas_id, parsed)
-        # scene_svg, owner and name preserved: this write isn't about them
-        _atomic_write_json(self._path(canvas_id), _record(canvas, elements_json=elements_json))
+        with self._write():
+            try:
+                canvas = self._row("id = ?", canvas_id)
+            except CanvasNotFound:
+                self._forget(canvas_id)  # deleted, possibly by the admin in another process
+                raise
+            if not secrets.compare_digest(canvas.token_hash, _hash_token(token)):
+                raise InvalidToken(canvas_id)
+            self.db.execute("UPDATE canvases SET elements_json = ?, modified_s = ? WHERE id = ?",
+                            (elements_json, time.time(), canvas_id))
+            self._record_edits(canvas_id, parsed)
 
-    def _record_edits(self, canvas_id: str, elements: list[dict]) -> None:
-        # The pushed drawing is re-inserted by every page load with a fresh
-        # version (canvas.html, insertPushedImage), so its version says
-        # nothing about a person's edit. For that one element, an edit is a
-        # change of where it is, how big, its rotation or its deletion.
+    def _record_edits(self, canvas_id: str, elements: list) -> None:
         """Log elements that are new or whose Excalidraw-assigned `version`
-        increased since the last write we saw. Uses Excalidraw's own
-        per-element versioning rather than diffing arrays ourselves --
-        it already tracks this; redoing it would be the same responsibility
-        owned twice. Skips anything missing id/version rather than guessing
-        (a non-Excalidraw or malformed entry shouldn't corrupt the log).
-
-        The browser posts its whole scene each time, so the markers kept are
-        those of this scene: an id it no longer holds is forgotten, and
-        logged as new if it ever comes back. The log keeps the newest
-        EDIT_LOG_ENTRIES entries; older ones are dropped, never summarized.
-        """
+        increased since the last write seen (Excalidraw already versions each
+        element; redoing that would own it twice). Skips anything without id
+        or version. The pushed drawing is re-inserted by every page load with
+        a fresh version, so for that one element an edit is a change of its
+        geometry or deletion. The markers kept are those of this scene; the
+        log keeps the newest EDIT_LOG_ENTRIES entries."""
         known: dict[str, object] = self._known_versions.setdefault(canvas_id, {})
         present: set[str] = set()
-        log = self._edit_log.setdefault(canvas_id, [])
+        entries = self._edit_log.setdefault(canvas_id, [])
         received_at = time.time()
         for el in elements:
             if not isinstance(el, dict):
@@ -698,7 +474,9 @@ class CanvasStore:
                               else version)
             if known.get(el_id) != marker:
                 known[el_id] = marker
+                seq = self._edit_seq[canvas_id] = self._edit_seq.get(canvas_id, 0) + 1
                 entry = {
+                    "seq": seq,  # this process's order, 1 upward; get_edits pages by it
                     "element_id": el_id,
                     "type": el.get("type"),
                     "version": version,
@@ -708,153 +486,76 @@ class CanvasStore:
                 }
                 if pushed:
                     entry["pushed_scene"] = True  # the agent's drawing, moved/resized/deleted
-                log.append(entry)
+                entries.append(entry)
         for gone in known.keys() - present:
             del known[gone]
-        if len(log) > EDIT_LOG_ENTRIES:  # bounded; in-memory only, this process's lifetime only
-            del log[:-EDIT_LOG_ENTRIES]
+        if len(entries) > EDIT_LOG_ENTRIES:
+            del entries[:-EDIT_LOG_ENTRIES]
 
+    @serialized
     def get_edits(self, canvas_id: str) -> list[dict]:
-        """Edits recorded since this CanvasStore was constructed -- not since
-        the canvas itself was created. Callers needing 404-on-unknown-canvas
-        get that from the verify_token/read they do before calling this."""
+        """Edits recorded since this CanvasStore was constructed, not since the
+        canvas was created."""
         return list(self._edit_log.get(canvas_id, []))
 
     def scene_version(self, canvas_id: str) -> str:
-        """Cheap change-detection token for polling, not a stored field --
-        derived from scene_svg on every read so there is nothing new to keep
-        in sync with it. Deliberately excludes elements_json: a browser
-        saving its own drawing must not see that as a change and reload
-        itself mid-stroke."""
-        canvas = self.read(canvas_id)
-        return hashlib.sha256((canvas.scene_svg or "").encode("utf-8")).hexdigest()[:16]
+        """Change-detection token for polling, derived from scene_svg on every
+        read. Excludes elements_json: a browser saving its own drawing must
+        not see that as a change and reload itself mid-stroke."""
+        return scene_version_of(self.read(canvas_id).scene_svg)
 
+    @serialized
     def list_canvases(self) -> list[dict]:
-        """Enumerate every canvas that exists, for admin/cleanup use --
-        never returns a token or its hash. This is deliberately the one
-        operation in this class that doesn't take a token at all: the
-        whole point is "help me see what exists" for someone who may not
-        hold every token any more, which is a different kind of caller
-        than everything else here. Reached only through
-        `boring-canvas-admin list` inside the container (admin.py), i.e. by
-        root -- never over HTTP or MCP.
-
-        A corrupt file is listed with its `problem` instead of the content
-        flags -- reported, not hidden, and not a reason to fail the list.
-        """
+        """Every canvas, for `boring-canvas-admin list` inside the container
+        (never HTTP or MCP); never a token or its hash."""
         results = []
-        for canvas_id, path, data, problem in self._scan():
-            if problem:
-                results.append({"canvas_id": canvas_id, "problem": problem,
-                                "modified_s": path.stat().st_mtime})
-                continue
-            entry = {
-                "canvas_id": canvas_id,
-                "has_scene": data.get("scene_svg") is not None,
-                "has_elements": data.get("elements_json") is not None,
-                "modified_s": path.stat().st_mtime,
-            }
-            if isinstance(data.get("owner"), str):
-                entry["owner"], entry["name"] = data["owner"], data.get("name")
+        for canvas_id, has_scene, has_elements, modified_s, owner, name in self.db.execute(
+                "SELECT id, scene_svg IS NOT NULL, elements_json IS NOT NULL, modified_s, "
+                "owner, name FROM canvases ORDER BY id"):
+            entry = {"canvas_id": canvas_id, "has_scene": bool(has_scene),
+                     "has_elements": bool(has_elements), "modified_s": modified_s}
+            if owner is not None:
+                entry["owner"], entry["name"] = owner, name
             results.append(entry)
         return results
 
-    @_with_records_lock
     def delete(self, canvas_id: str) -> None:
-        """Remove a canvas entirely -- admin operation, no token check (see
-        list_canvases' docstring for why that's deliberate here). Raises
-        CanvasNotFound rather than silently succeeding on an id that never
-        existed, so a typo'd id in a delete command is caught, not
-        silently ignored.
+        """Remove a canvas (admin; no token). An unknown id raises
+        CanvasNotFound, so a mistyped delete is caught."""
+        with self._write():
+            if not self.db.execute("DELETE FROM canvases WHERE id = ?", (canvas_id,)).rowcount:
+                raise CanvasNotFound(canvas_id)
+            self._forget(canvas_id)
 
-        A named canvas's name is unbound first, then the file removed: a
-        crash in between leaves an unbound file (swept later), never a
-        name bound to nothing.
-        """
-        path = self._path(canvas_id)
-        try:
-            data = _load(path)
-        except FileNotFoundError:
-            raise CanvasNotFound(canvas_id) from None
-        except CorruptCanvas:
-            self._unbind_everywhere(canvas_id)
-        else:
-            owner, name = data.get("owner"), data.get("name")
-            if isinstance(owner, str) and isinstance(name, str) and _NAME_RE.fullmatch(name):
-                self._unbind(self._marker(owner, name), canvas_id)
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            raise CanvasNotFound(canvas_id) from None
-        self._edit_log.pop(canvas_id, None)
-        self._known_versions.pop(canvas_id, None)
-        self._corrupt.pop(canvas_id, None)
-
-    @_with_records_lock
     def delete_named(self, owner: str, name: str) -> None:
-        """delete for MCP: the owner's canvas by name (the Pond is proven by
-        the control plane). Another owner's canvas of the same name is not
-        found. Raises CanvasNotFound, NameIndexBroken."""
-        self.delete(self.find_named(owner, name).canvas_id)
+        """delete for MCP: the owner's canvas by name."""
+        with self._write():
+            canvas = self._row("owner = ? AND name = ?", owner, name)
+            self.db.execute("DELETE FROM canvases WHERE id = ?", (canvas.canvas_id,))
+            self._forget(canvas.canvas_id)
 
-    @_with_records_lock
     def reissue_named_token(self, owner: str, name: str) -> tuple[str, str]:
         """A fresh browser token for the owner's canvas `name`; the old one
-        stops working (open browsers are signed out). For MCP, where the
-        owner is proven by the control plane and only a hash of the old
-        token is stored. Returns (canvas_id, token). Raises CanvasNotFound,
-        NameIndexBroken."""
-        canvas = self.find_named(owner, name)
+        stops working (open browsers are signed out). Returns (canvas_id,
+        token). Raises CanvasNotFound."""
         new_token = secrets.token_urlsafe(32)
-        _atomic_write_json(self._path(canvas.canvas_id),
-                           _record(canvas, token_hash=_hash_token(new_token)))
+        with self._write():
+            canvas = self._row("owner = ? AND name = ?", owner, name)
+            self.db.execute("UPDATE canvases SET token_hash = ?, modified_s = ? WHERE id = ?",
+                            (_hash_token(new_token), time.time(), canvas.canvas_id))
         return canvas.canvas_id, new_token
 
-    @_with_records_lock
-    def rotate_token(self, canvas_id: str, current_token: str) -> str:
-        """Invalidate the current token and issue a fresh one, for a canvas
-        whose token you still hold but want to stop using (an old shared
-        link, a link that's served its purpose). Unlike list/delete, this
-        DOES require the current token -- "prove you have access, get a
-        replacement" is a different operation from "show me what exists
-        regardless," and conflating the two would make rotation into an
-        admin operation it was never meant to be. Content (scene_svg,
-        elements_json) is preserved untouched; only the token changes.
-        """
-        canvas = self.read(canvas_id)  # raises CanvasNotFound
-        if not secrets.compare_digest(canvas.token_hash, _hash_token(current_token)):
-            raise InvalidToken(canvas_id)
-        new_token = secrets.token_urlsafe(32)
-        _atomic_write_json(self._path(canvas_id),
-                           _record(canvas, token_hash=_hash_token(new_token)))
-        return new_token
-
-    @_with_records_lock
     def sweep_expired(self, max_age_s: float) -> list[str]:
-        """Delete every canvas older than max_age_s (from creation) and
-        return the ids that were removed. Called from create_named() as a
-        "common usage triggered" side effect -- not
-        from ordinary reads (list_canvases included), which stay pure.
-        Deliberately not a check-on-access sweep tied to any one canvas's
-        own visits: the trigger is "the tool got used at all," which
-        means a forgotten, never-individually-revisited canvas still gets
-        caught the next time anything at all is created, not only if
-        someone happens to open that specific old link again.
+        """Delete every canvas older than max_age_s (from creation); the ids
+        removed. create_named runs it; reads stay pure."""
+        with self._write():
+            return self._sweep(max_age_s)
 
-        A corrupt file (see _scan) is never deleted here: its age is
-        unknown and its content may still be wanted. It is logged and shown
-        by list_canvases/limits_status for an operator to deal with. That
-        includes a record without created_s.
-        """
-        deleted = []
-        now = time.time()
-        for canvas_id, _, data, problem in self._scan():
-            if problem:
-                continue  # reported by _scan; never swept
-            if now - data["created_s"] > max_age_s:
-                try:
-                    self.delete(canvas_id)
-                except CanvasNotFound:
-                    continue  # already gone (race with a manual delete); fine
-                deleted.append(canvas_id)
-        return deleted
+    def _sweep(self, max_age_s: float) -> list[str]:
+        cutoff = time.time() - max_age_s
+        expired = [row[0] for row in self.db.execute(
+            "SELECT id FROM canvases WHERE created_s < ? ORDER BY id", (cutoff,))]
+        self.db.execute("DELETE FROM canvases WHERE created_s < ?", (cutoff,))
+        for canvas_id in expired:
+            self._forget(canvas_id)
+        return expired

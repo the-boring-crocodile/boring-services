@@ -1,6 +1,8 @@
 """boring-sourcecache-d365: the MCP server over one or more source indexes.
 
     boring-sourcecache-d365 build --source <PackagesLocalDirectory> --db <file> --name <name> [--locales en-US,de]
+        [--readers 16] [--application-version 10.0.2790.46 --platform-version 7.0.8199.32
+         --release-version 10.0.49 --version-evidence "InstallationRecords, read 2026-10-15"]
     boring-sourcecache-d365 serve --config <config.json> --db <file> [--db <file> ...]
 
 An index is one SQLite file (`--db`) with a name stored inside it (`--name`,
@@ -115,6 +117,15 @@ def main(argv: list[str] | None = None) -> None:
     build.add_argument("--db", required=True, help="the index file to write")
     build.add_argument("--name", required=True, help="e.g. d365scm-10.0.49 or the environment's name")
     build.add_argument("--locales", help="label languages to keep, comma-separated (e.g. en-US,de); default: all")
+    build.add_argument("--readers", type=int, default=sourcecache.READERS_DEFAULT,
+                       help="files read at once, 1..%d (default %%(default)s; the index is the same for any value)"
+                       % sourcecache.READERS_MAX)
+    build.add_argument("--application-version",
+                       help="the application build from the installation records (e.g. 10.0.2790.46); "
+                            "without it the snapshot says unknown (model descriptors carry model versions)")
+    build.add_argument("--platform-version", help="the platform build from the installation records (e.g. 7.0.8199.32)")
+    build.add_argument("--release-version", help="the release name (e.g. 10.0.49)")
+    build.add_argument("--version-evidence", help="one line: where the versions were read (with --application-version)")
     serve = commands.add_parser("serve", help="answer over HTTP, configured by --config")
     add_config_argument(serve)
     serve.add_argument("--db", action="append", required=True, help="an index file; repeat for more")
@@ -133,7 +144,12 @@ def main(argv: list[str] | None = None) -> None:
         if args.command == "build":
             report = sourcecache.build(args.source, args.db, args.name,
                                      progress=lambda n: print(f"{n} files", file=sys.stderr, flush=True),
-                                     locales=args.locales.split(",") if args.locales else None)
+                                     locales=args.locales.split(",") if args.locales else None,
+                                     readers=args.readers,
+                                     versions={"application": args.application_version,
+                                               "platform": args.platform_version,
+                                               "release": args.release_version,
+                                               "evidence": args.version_evidence})
             print(json.dumps(report, indent=2))
             return
         config = ServiceConfig(args.config)

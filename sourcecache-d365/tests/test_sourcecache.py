@@ -7,6 +7,7 @@ scan of the corpus files, and each of its four label findings has its own case.
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from contextlib import closing
@@ -62,8 +63,11 @@ def test_build_reports_counts_and_versions(built):
     assert set(stored(index.path, "SELECT package, model FROM models")) == set(corpus.MODELS)
     assert stored(index.path, "SELECT COUNT(*) FROM models") == [(len(corpus.MODELS),)]
     assert index.meta["name"] == "d365-synthetic-10.0.99"
-    assert index.meta["application_version"] == "10.0.2177.31"
-    assert index.meta["platform_version"] == "7.0.7701.12"
+    # No installation records given: the release is unknown, the model versions labelled.
+    assert index.meta["application_version"] == "unknown"
+    assert index.meta["platform_version"] == "unknown"
+    assert json.loads(index.meta["builder_descriptor_versions"]) == {"ApplicationSuite": "10.0.2177.31",
+                                                                    "ApplicationPlatform": "7.0.7701.12"}
 
 
 def test_models_carry_layer_and_publisher(built):

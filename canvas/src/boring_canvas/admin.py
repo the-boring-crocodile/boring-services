@@ -1,7 +1,7 @@
 """boring-canvas admin: list, delete, token and limits, run inside the container.
 
-    boring-canvas-admin list             every canvas, corrupt ones with `problem`
-    boring-canvas-admin delete <id>      remove one canvas (and its name binding)
+    boring-canvas-admin list             every canvas
+    boring-canvas-admin delete <id>      remove one canvas
     boring-canvas-admin token NAME [--owner CALLER]
                                          a fresh browser token for a named canvas
     boring-canvas-admin limits           configured limits and current standing
@@ -29,12 +29,11 @@ This is a second process next to the server, on the same state directory:
   argument parser, so this reports what the server enforces.
 - `creates_in_current_window` lives only in the server's memory and is not
   visible from here; it is reported as null, not as a made-up 0.
-- `delete` is CanvasStore.delete, under the store's records lock, which is
-  a file lock in the state directory shared with the server: a server write
-  in flight finishes first, and none that read the record before the
-  delete can publish it again afterwards. `token` takes the same lock, so
-  no older write can restore the replaced hash. The server's in-memory edit
-  log for a deleted id stays until its next restart (harmless).
+- `delete` and `token` are CanvasStore writes: one SQLite IMMEDIATE
+  transaction each on the database the server uses, so a server write in
+  flight finishes first, and none that read the record before can publish
+  it again afterwards or restore a replaced hash. The server's in-memory
+  edit log for a deleted id stays until its next restart (harmless).
 
 Output is JSON on stdout. Exit status: 0 done, 1 no such canvas, 2 usage or
 a server command line that cannot be read.
@@ -51,14 +50,18 @@ from .storage import CanvasNotFound, CanvasStore
 
 SERVER_CMDLINE = Path("/proc/1/cmdline")
 SERVER_MODULE = "boring_canvas.server"
+SERVER_SCRIPT = "boring-canvas-server"  # the console script the image runs
 
 
 def server_args(cmdline: bytes) -> argparse.Namespace:
-    """The server's parsed arguments from a NUL-separated /proc cmdline."""
+    """The server's parsed arguments from a NUL-separated /proc cmdline: started as
+    `python -m boring_canvas.server ...` or as the console script
+    (`python /usr/local/bin/boring-canvas-server ...`, the image's command)."""
     argv = [part.decode("utf-8") for part in cmdline.split(b"\0") if part]
-    if SERVER_MODULE not in argv:
-        raise ValueError(f"not the canvas server: {argv[:3]}")
-    return build_parser().parse_args(argv[argv.index(SERVER_MODULE) + 1:])
+    for index, part in enumerate(argv[:3]):
+        if part == SERVER_MODULE or Path(part).name == SERVER_SCRIPT:
+            return build_parser().parse_args(argv[index + 1:])
+    raise ValueError(f"not the canvas server: {argv[:3]}")
 
 
 def store_for(args: argparse.Namespace) -> CanvasStore:
@@ -112,13 +115,13 @@ def run(command: str, canvas_id: str | None, store: CanvasStore, owner: str | No
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="boring-canvas-admin",
                                      description="boring-canvas admin (inside the container)")
-    parser.add_argument("--state-dir", type=Path, help="native local state directory (writes share the server's records lock)")
+    parser.add_argument("--state-dir", type=Path, help="native local state directory (the server's database)")
     parser.add_argument("--max-age-days", type=float, default=42)
     parser.add_argument("--create-rate-limit", type=int, default=10)
     parser.add_argument("--max-canvases", type=int, default=100)
     parser.add_argument("--public-base-url", default=None, help="native: the URL `token` prints the canvas under")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("list", help="every canvas, corrupt ones with `problem`")
+    sub.add_parser("list", help="every canvas")
     p_delete = sub.add_parser("delete", help="remove one canvas")
     p_delete.add_argument("canvas_id")
     p_token = sub.add_parser("token", help="a fresh browser token for a named canvas (the old one stops working)")

@@ -4,12 +4,13 @@ plus an optional MCP service on a second, internal port in the same process
 
     POST   /canvas/<id>/session        exchange token for a session cookie
     GET    /canvas/<id>                serve the page (Excalidraw shell)
-    POST   /canvas/<id>/scene          push an SVG (CLI-facing, bearer token)
     GET    /canvas/<id>/version        cheap change-detection hash, for polling
-    GET    /canvas/<id>/elements       read back the drawn scene (bearer token)
     POST   /canvas/<id>/elements       browser saves its own scene (cookie)
-    GET    /canvas/<id>/edits          per-element edit log since server start
-    POST   /canvas/<id>/rotate         invalidate current token, issue a new one (bearer)
+    GET    /canvas/assets/...          the page's bundled scripts and fonts
+
+Pushing a drawing and reading back what was drawn are MCP tools
+(mcp_service.py), addressed by name for the verified caller; the web port
+only serves the person's browser.
 
 No web route creates a canvas: canvases are created over MCP only
 (create_canvas, by a verified caller); `POST /canvas` is an unknown route
@@ -43,13 +44,11 @@ from .web_handler import CanvasHandler
 from .web_views import (UNSAFE_URL_AUTH_PARAM)
 
 
-def make_handler(store: CanvasStore, public_base_url: str | None,
-                 unsafe_url_auth: bool = False) -> type[http.server.BaseHTTPRequestHandler]:
+def make_handler(store: CanvasStore, public_base_url: str | None) -> type[http.server.BaseHTTPRequestHandler]:
     class Handler(CanvasHandler):
         timeout = 30  # seconds a client may stall while sending or receiving
     Handler.store = store
     Handler.public_base_url = public_base_url
-    Handler.unsafe_url_auth = unsafe_url_auth
     return Handler
 
 
@@ -69,7 +68,7 @@ def serve(state_dir: Path, host: str, port: int, public_base_url: str | None,
     # HTTP fallback but necessarily less precise (no per-request signal to
     # work from).
     resolved_base_url = public_base_url or f"http://{'127.0.0.1' if host == '0.0.0.0' else host}:{port}"
-    handler = make_handler(store, public_base_url, unsafe_url_auth)
+    handler = make_handler(store, public_base_url)
     print(f"boring-canvas: canvas expiry {max_age_days} days from creation, "
           f"swept when a canvas is created (no scheduler)")
     print("boring-canvas: canvases are created over MCP only; the web port "
@@ -79,8 +78,8 @@ def serve(state_dir: Path, host: str, port: int, public_base_url: str | None,
           f"max canvases {'unlimited' if not max_canvases else max_canvases} "
           f"(reportable with `boring-canvas-admin limits`)")
     if unsafe_url_auth:
-        print(f"boring-canvas: --unsafe-url-auth is ON -- canvas links with "
-              f"?{UNSAFE_URL_AUTH_PARAM}=... will auto-authenticate.")
+        print(f"boring-canvas: --unsafe-url-auth is ON -- open_url carries the token "
+              f"in the fragment (#{UNSAFE_URL_AUTH_PARAM}=...); the page signs in with it.")
 
     class _Server(socketserver.ThreadingTCPServer):
         # Default is False; a restart right after stopping the previous
@@ -99,8 +98,8 @@ def serve(state_dir: Path, host: str, port: int, public_base_url: str | None,
         # uvicorn shuts MCP down (lifespan: session manager, watchdog task
         # cancelled in boring_service_kit.pond.run) and then re-raises the signal, which
         # ends the process and the web thread with it, exit status 143 --
-        # the same abrupt end the web server always had (writes are atomic
-        # renames, see storage.py). If uvicorn returns any other way (e.g.
+        # the same abrupt end the web server always had (writes are SQLite
+        # transactions, see storage.py). If uvicorn returns any other way (e.g.
         # the MCP port cannot be bound), the web server is shut down here.
         # Imported here so the web-only mode needs no third-party package.
         import asyncio
