@@ -1,5 +1,5 @@
 {
-  "url": "https://crocodile-url.example.test/knowledge/mcp",
+  "url": "https://crocodile-url.example.test/services/knowledge/mcp",
   "bind": "0.0.0.0",
   "port": 18512,
   "oauth": {

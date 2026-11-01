@@ -4,6 +4,11 @@ A drawable canvas ([Excalidraw](https://excalidraw.com/)) for agents and people:
 canvas and pushes a drawing, a person opens its link and draws on it, the
 agent reads the edits back. Agents reach it over MCP, people in the browser.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/canvas-dark.svg">
+  <img alt="Canvas, one drawing between an agent and a person, in seven steps: the AI agent calls create_canvas and push_scene on Canvas's MCP tools (1); the drawing is cleaned of scripts and stored (2); the operator on the host runs boring-canvas-admin token (3) and hands the person the link with the token (4); the person opens the Canvas page in a browser and draws (5); the page saves the person's marks (6); the agent calls get_edits and gets them back as data, shapes, text and positions, not a screenshot (7). The MCP tools, the page and the store run in one container with its own account; the store keeps a canvas 42 days." src="../docs/canvas.svg">
+</picture>
+
 ## Why
 
 A diagram in a chat explains a design, but discussing changes still means

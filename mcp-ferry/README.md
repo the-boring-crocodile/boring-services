@@ -1,7 +1,8 @@
 # boring-mcp-ferry
 
 Carries MCP servers you did not write to a Crocodile's Ponds, as ordinary
-services: the Pond's tokens in front, the server on a private network behind.
+services, or straight to a person's client: a sign-in in front, the server on a
+private network behind.
 
 Most MCP servers use MCP's authorization not at all. They run over stdio, or
 over HTTP with no authentication or a static secret. That suits one person on
@@ -17,6 +18,14 @@ ferry gives each one what the Pond expects from a service:
 Behind the ferry the server stays as its authors made it, in the setting it was
 made for: a container on an internal network that only the ferry joins.
 
+The ferry works without a Pond as well: its front ends then sign a person's
+client (Claude on the web, say) in themselves ([Without a Pond](#without-a-pond)).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/ferry-dark.svg">
+  <img alt="Ferry, someone else's MCP server behind a door: a Pond calls Ferry's Pond front end with a token the Crocodile minted, and that front end has the Crocodile check it and registers the backend as one Pond service; Claude on the web signs in at Ferry's gateway with the approval secret and gets four tools, service_list, describe, read and call. Both front ends run in one Ferry container; behind them, ha-mcp and another server that are not ours sit on private networks only the ferry joins. ha-mcp sits behind both front ends; without a Pond, only the gateway's half is needed." src="../docs/ferry.svg">
+</picture>
+
 ## What crosses
 
 Only `tools/list` and `tools/call`; that is all a Pond's worker asks for.
@@ -29,7 +38,8 @@ Only `tools/list` and `tools/call`; that is all a Pond's worker asks for.
 - The server's answer, its own errors included, is passed on unchanged.
 - One deadline per call (the backend's `timeout_seconds`, at most the Pond's
   call time), counted from the request's arrival, covers checking the tool list
-  and the call. The tool list is cached for a minute and fetched once at a time.
+  and the call. Without a Pond there is no Pond's call time: only
+  `timeout_seconds` bounds a call, so set it. The tool list is cached for a minute and fetched once at a time.
 - Server unreachable, or its tool list not to be had: refused `unavailable`,
   nothing was sent. No time left before sending: refused `limit`. No answer in
   time, a broken connection or a protocol error: failed, the call may have run.
@@ -38,10 +48,14 @@ Only `tools/list` and `tools/call`; that is all a Pond's worker asks for.
 
 ## Configuration
 
-One ferry carries several backends. Each backend is one Pond service with its
-own front end: `config/services/NAME.json`, a boring-service-kit configuration
-like every service's (its URL and port, `oauth` with the Crocodile, `access`,
-`pond`). `config/config.json` lists the backends:
+One ferry carries several backends. Each backend has its own front end, or sits
+behind a gateway (below): `config/services/NAME.json`, a boring-service-kit
+configuration like every service's (its URL and port, how it signs callers in,
+`access`). Towards a Pond that is `oauth` with the Crocodile and `pond`
+registration: the backend is one Pond service. Every front end takes what the
+kit takes; the one exception: a front end with its own sign-in (`issuer`) does
+not register with a Pond, since a Pond calls only with the Crocodile's tokens.
+`config/config.json` lists the backends:
 
 ```json
 {"backends": {
@@ -58,7 +72,7 @@ like every service's (its URL and port, `oauth` with the Crocodile, `access`,
 | `service` | the backend's front end (kit configuration); its port one of 18520-18529, `bind` the ferry's own address (`172.16.46.2` in the template; a wildcard bind is refused), so its `url` is the `https` one the reverse proxy serves (the kit takes plain `http` only on a loopback bind) |
 | `upstream.url` / `upstream.url_file` | where the ferry reaches the backend; `url_file` when the URL is itself a secret (a secret path) |
 | `upstream.headers_file` | optional JSON object of HTTP headers, for a server with a static secret |
-| `upstream.timeout_seconds` | optional; at most the Pond's call time, which is the default |
+| `upstream.timeout_seconds` | optional; at most the Pond's call time, which is the default; without a Pond no default (set it) |
 | `tools.allow` / `tools.deny` | optional; a tool left out is neither listed nor callable |
 
 Relative paths resolve next to the file naming them. Unknown keys are refused,
@@ -119,9 +133,99 @@ backends and name which ones it carries:
 - Linux deployment checks enumerate backend frontends and gateways from the runtime configuration.
   Reach checks cover their authority URLs; smoke checks each frontend endpoint and any configured
   Pond registration. Backend availability remains the heartbeat's responsibility.
-- A backend needs `service` (its own front end) only when it is not behind a gateway.
-- A gateway's `service` may use access keys only (`keys`, loopback bind): Copilot on a dev box. A backend's
-  own front end still needs the Crocodile (`oauth`).
+- A backend needs `service` (its own front end) only when it is not behind a gateway. It may have both:
+  each front end is its own way in, with its own sign-in. For a gateway only, leave `service` out (and
+  its proxy route).
+- A gateway's `service` is a front end like a backend's: the Crocodile (`oauth`), its own sign-in
+  (`issuer`, [Without a Pond](#without-a-pond)) or access keys (`keys` on a loopback bind: Copilot on a
+  dev box).
+
+## Without a Pond
+
+The ferry and a few MCP servers, used straight from a person's client (Claude on
+the web, say), with no Crocodile: each front end signs its person in itself, as
+any service can ([Where a service lives](../README.md#where-a-service-lives)).
+One gateway carries them all under one name, one sign-in and one connector; the
+client sees the four gateway tools and reads a server's tools when it needs
+them. A backend may have its own front end instead, so the client sees its tools
+directly, at the price of a host name, an approval secret and a connector each.
+Both can be mixed, and a backend may have both: each front end is its own way
+in. A Pond and a person can share a backend that way: its own front end towards
+the Pond (`oauth`, `pond`), a gateway with its own sign-in for the person.
+
+What it needs:
+
+- **A host name of its own**, its DNS pointing at the host, routed whole to the
+  front end's port: the sign-in paths (`/authorize`, `/token`, `/revoke`,
+  `/approve`, the authorization-server metadata) sit at the root of the name.
+  In Caddy, before the install (the deploy checks the front end through it):
+
+      tools-url.example.test {
+          reverse_proxy 127.0.0.1:18520
+      }
+
+- **The sign-in database** in `/data/state/oauth/`, one file per front end: the
+  install creates that directory, private to the ferry's account, and the kit
+  refuses any other that is not.
+- **The approval secret**: 32 random bytes in `credentials/`, root's and the
+  service account's only. Whoever connects enters it once on the approval page;
+  without it no client gets a token.
+- **No `service-add`, no `pond`**: there is no Crocodile. The deploy checks the
+  front end's answer (401 and its metadata) and skips the reach and
+  registration checks.
+- **`timeout_seconds` on each backend**: without a Pond nothing else bounds a
+  call.
+
+The first install, Home Assistant's ha-mcp as the one backend (the example
+below), on a host with Docker and Compose 2.24+ and the route above. Set
+`H` to the host name, replace `YOUR-SECRET-PATH` with the path ha-mcp will
+get as its `MCP_SECRET_PATH` (the same value in both places), and copy the
+block; it stops at the first failure:
+
+    V=0.1.4 S=mcp-ferry H=tools-url.example.test B=homeassistant
+    f=boring-$S-$V-linux-x86_64.tar.gz
+    u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
+    mkdir -p ~/Downloads && cd ~/Downloads &&
+    curl -fLO "$u/$f" && curl -fLO "$u/$f.sha256" &&
+    sha256sum -c "$f.sha256" &&            # must print OK; if not, the block stops here
+    sudo mkdir -p /root/releases && sudo tar xzf "$f" -C /root/releases &&
+    sudo install -d -m 0700 /root/$S-config &&
+    sudo install -d -m 0700 /root/$S-config/services /root/$S-config/credentials &&
+    sudo tee /root/$S-config/config.json > /dev/null <<EOF &&
+    {"backends": {"$B": {"upstream": {"url_file": "../credentials/$B-url", "timeout_seconds": 60}}},
+     "gateways": {"tools": {"service": "services/tools.json", "backends": ["$B"]}}}
+    EOF
+    sudo tee /root/$S-config/services/tools.json > /dev/null <<EOF &&
+    {"url": "https://$H/mcp", "bind": "172.16.46.2", "port": 18520,
+     "issuer": {"database": "/data/state/oauth/tools.db",
+                "approval_secret_file": "../../credentials/tools-approval", "subject": "robin"},
+     "access": [{"subject": "robin", "role": "writer"}]}
+    EOF
+    sudo sh -c "umask 077 && echo http://$B:8086/YOUR-SECRET-PATH > /root/$S-config/credentials/$B-url" &&
+    sudo sh -c "umask 077 && openssl rand -base64 32 > /root/$S-config/credentials/tools-approval" &&
+    sudo /root/releases/boring-$S-$V/deploy --install --config-dir /root/$S-config
+
+The ferry then runs, and `service_list` shows the backend unavailable until its
+container is in `/opt/boring-mcp-ferry/compose.yaml` (Installing, below; the
+example); the next `deploy` starts it:
+`sudo /root/releases/boring-$S-$V/deploy /opt/boring-mcp-ferry`.
+
+**In Claude:** add a custom connector with `https://$H/mcp` and sign in; the
+approval page asks for the secret, which you read with
+`sudo cat /opt/boring-mcp-ferry/credentials/tools-approval`.
+
+**What an approval hands over.** Every client approved with the secret acts as
+the one `subject` (`robin` above), with its role, on every backend the front end
+carries: `writer` may call any tool those backends offer, `reader` only those
+they mark read-only. An access token lasts an hour; a client stays signed in
+through its refresh token while it is used (14 days unused end it). A new
+approval secret stops new approvals, not existing ones. To see and remove
+approved clients:
+
+    sudo docker compose -f /opt/boring-mcp-ferry/compose.yaml exec ferry \
+        boring-service-oauth --db /data/state/oauth/tools.db clients
+    sudo docker compose -f /opt/boring-mcp-ferry/compose.yaml exec ferry \
+        boring-service-oauth --db /data/state/oauth/tools.db client-remove CLIENT_ID
 
 ## Installing
 
@@ -131,18 +235,26 @@ is the ferry plus one container per backend; the template's comments show a
 backend block. For each backend:
 
 1. Its container in `compose.yaml`, image pinned by digest, on its own network
-   with `internal: true`, which the ferry joins; nothing published;
+   with `internal: true`, which the ferry joins; nothing published. Its
+   service name is the host in the backend's URL (`http://NAME:PORT/...`);
+   the network is named three times alike: under the backend, in the
+   ferry's `networks:`, and at the top level with `internal: true`. Files the
+   backend needs (a script, its settings) go into the home beside
+   `compose.yaml`, mounted read-only;
    `cap_drop: [ALL]` (without `NET_RAW` it cannot craft packets to the ferry's
    own address on that network: the bind alone keeps out ordinary traffic only).
-2. Its entry in `config.json` and its front end in `services/NAME.json`.
-3. `sudo boring-crocodile-admin service-add NAME --url <front end URL> --ponds ...`,
-   its client secret into `credentials/`.
+2. Its entry in `config.json` and, unless only a gateway carries it, its front
+   end in `services/NAME.json`.
+3. Towards a Pond: `sudo boring-crocodile-admin service-add NAME --url <front end URL> --ponds ...`,
+   its client secret into `credentials/` (without a Pond: the approval secret, above).
 4. Its own secrets (an API token, the URL with a secret path) into
    `credentials/`, root's and the service account's only.
 
-The reverse proxy routes each front end's path and its metadata path to its
-loopback port, as for any service. The ferry's container must reach the
-Crocodile's public URL (introspection, registration): its network is
+The reverse proxy routes each front end to its loopback port: one that trusts
+the Crocodile by its path and its metadata path, as for any service; one with
+its own sign-in by its whole host name (Without a Pond). Towards a Pond, the
+ferry's container must
+reach the Crocodile's public URL (introspection, registration): its network is
 `172.16.46.0/24`.
 
 ## Example: ha-mcp for a Home Assistant

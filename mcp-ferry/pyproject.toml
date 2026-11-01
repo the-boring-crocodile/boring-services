@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boring-mcp-ferry"
-version = "0.1.3"
+version = "0.1.4"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "COPYING.md"]
-description = "Carries MCP servers we did not write to the Pond as ordinary services: Crocodile tokens in front, the backend on a private network behind"
+description = "Carries MCP servers we did not write to a Pond, or straight to a person's client: a sign-in in front, the backend on a private network behind"
 requires-python = ">=3.10"
 dependencies = ["mcp>=2.2,<2.3", "boring-service-kit>=0.7.10,<0.8", "boring-registry>=0.7.10,<0.8",
                 "httpx2>=2.13,<3", "exceptiongroup>=1.3; python_version < '3.11'"]

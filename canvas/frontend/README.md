@@ -3,9 +3,8 @@
 Run `npm ci --ignore-scripts --no-audit`, then `node build.mjs` here.
 The checked-in lock pins Excalidraw 0.18.1, React/ReactDOM 19.0.0 and
 esbuild 0.25.5. `overrides` in package.json raise nanoid and lodash-es past
-Excalidraw's and Mermaid's exact pins to versions without the known advisories
-(2026-10-30), and KaTeX from Mermaid 11's 0.16 to 0.18.10 (2026-10-31; 0.18.11
-is withdrawn upstream); drop an override once upstream requires a fixed version
+Excalidraw's and Mermaid's exact pins to versions without the known advisories,
+and KaTeX from Mermaid 11's 0.16 to 0.18.10 (0.18.11 is withdrawn upstream); drop an override once upstream requires a fixed version
 itself. braces 3.0.3 (build tooling, not bundled) has a withdrawn advisory and
 no newer version.
 Generated assets ship in the Python wheel. Browsers require

@@ -3,13 +3,14 @@
 # deploy never rewrite it; the deploy changes only HOME/.env (BORING_IMAGE).
 # @UID@:@GID@ are the service account's, as the OS assigned them.
 #
-# The ferry carries third-party MCP servers ("backends") to the Pond. Each
+# The ferry carries third-party MCP servers ("backends") to a Pond, or to a
+# person's client without one (mcp-ferry README, Without a Pond). Each
 # backend is one more service in this file, on an internal network of its own
 # that only the ferry also joins: no published port, nothing else reaches it,
 # and backends never share a network. Adding one: its block below (image pinned
 # by digest), its network, the ferry joining that network, its entry in
 # config/config.json, its front end in config/services/NAME.json, its secrets
-# in credentials/, and `boring-crocodile-admin service-add NAME ...`.
+# in credentials/, and, towards a Pond, `boring-crocodile-admin service-add NAME ...`.
 
 services:
   ferry:
@@ -27,8 +28,8 @@ services:
     mem_limit: 512m
     pids_limit: 128
     ports:
-      # One front end per backend, each its own port (its config/services/NAME.json),
-      # on host loopback only: the Pond's worker or the reverse proxy.
+      # Each front end its own port (its config/services/NAME.json), on host
+      # loopback only: the reverse proxy forwards to it.
       - "127.0.0.1:18520-18529:18520-18529"
     volumes:
       - ./state:/data/state
@@ -72,7 +73,7 @@ services:
 # A fixed subnet outside Docker's pools, so a host firewall rule that lets the
 # ferry reach the control plane (from 172.16.46.0/24) cannot go stale.
 # Canvas has 172.16.42.0/24, Knowledge 172.16.43.0/24, Sourcecache 172.16.44.0/24,
-# Fishmarket 172.16.45.0/24 (example network).
+# Fishmarket has none of its own: it joins the proxy's network.
 networks:
   default:
     ipam:

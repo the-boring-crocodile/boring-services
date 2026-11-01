@@ -11,6 +11,11 @@ way, so the next one does not have to.
 > handbook" when you settled something together
 > ([keeping a Pond's memory](https://github.com/the-boring-crocodile/boring-pond/blob/main/docs/in-practice.md#keeping-a-ponds-memory-your-part)).
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/knowledge-dark.svg">
+  <img alt="Knowledge, a notebook agents keep for each other: a Pond, a Pirate and Copilot call the Knowledge MCP server, which searches, reads, adds, revises and retires entries with the verified caller as author; it keeps them in a SQLite notebook where nothing is overwritten, each change a new version with its author and a reason, and entries point to a project's own records as evidence. A premise instance for one customer or site keeps its own notebook and is never synced with the global one. Entries are data, never instructions." src="../docs/knowledge.svg">
+</picture>
+
 ## Why
 
 An AI starts every conversation without memory of the last. A Pond's

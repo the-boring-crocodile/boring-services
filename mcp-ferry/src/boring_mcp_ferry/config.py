@@ -13,10 +13,11 @@
     },
      "gateways": {"pondnt-services": {"service": "services/gateway.json", "backends": ["d365"]}}}
 
-- `service`: the backend's front end towards the Pond, a boring-service-kit
-  ServiceConfig file (its URL and port, the Crocodile as issuer by
-  introspection, `access`, `pond` registration). One per backend: its own
-  service credentials, URL and token audience.
+- `service`: the backend's front end, a boring-service-kit ServiceConfig file
+  (its URL and port, how it signs callers in, `access`). Towards a Pond: the
+  Crocodile by introspection (`oauth`) and `pond` registration. Without a
+  Pond: its own sign-in (`issuer`) for a person's client, or access keys.
+  One per backend: its own URL, port and token audience.
 - `upstream`: where the ferry reaches the backend, an internal URL that only
   the ferry can reach. `url` inline, or `url_file` when the URL itself is a
   secret (a server whose only protection is a secret path). `headers_file`: a

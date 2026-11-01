@@ -3,7 +3,7 @@
 # deploy never rewrite it; the deploy changes only HOME/.env (BORING_IMAGE).
 # @UID@:@GID@ are the service account's, as the OS assigned them. No host
 # port: the edge (Caddy) reaches it on its network (--edge-network) at
-# fishmarket:8000; see docs/DEPLOYMENT.md for the routes.
+# fishmarket:8000; README.md, "Before the first install", lists the routes.
 
 services:
   fishmarket:
