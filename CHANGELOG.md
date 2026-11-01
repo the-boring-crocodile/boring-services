@@ -1,7 +1,27 @@
 # Changelog
 
 Notable changes per release, newest first ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-[SemVer](https://semver.org/); tags `vX.Y.Z`, candidates `vX.Y.Z-rc.N`).
+[SemVer](https://semver.org/); each service is tagged on its own, `SERVICE-vX.Y.Z`, e.g. `canvas-v0.2.19`).
+
+## 2026-11-01: MCP Ferry 0.1.4
+
+### MCP Ferry 0.1.4
+
+- Every front end is a kit front end: a backend's own front end, like a gateway, takes the
+  Crocodile's tokens (`oauth`), its own sign-in (`issuer`) or access keys (`keys`). Without a Pond,
+  the ferry and a few MCP servers serve a person's client (Claude on the web) directly; the README's
+  "Without a Pond" has the install block, the proxy route and how to list and remove approved
+  clients. A backend's own front end towards a Pond and a gateway with its own sign-in can carry
+  the same backend at once.
+- A front end with its own sign-in and `pond` registration is refused: a Pond calls only with the
+  Crocodile's tokens. A gateway configured that way in 0.1.3 started, registered and refused every
+  Pond call; it now refuses to start: drop `pond` (a person's client) or use `oauth` (a Pond).
+- A backend's front end that does not register with a Pond no longer answers the heartbeat
+  question (`server/discover`) with its backend's state: that answer comes before the token check.
+- Without a Pond only a backend's `timeout_seconds` bounds a call (the README says so and the
+  example sets it).
+- No change for a ferry that serves a Pond: same configuration, state and deployment; upgrade and
+  roll back as for 0.1.3.
 
 ## 2026-10-31: Canvas 0.2.19
 

@@ -4,6 +4,11 @@ Temporary one-file handovers between an agent and a person's browser: the
 agent puts a file in and gives the person a link, or gives the person an
 upload link and collects what they put in.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/fishmarket-dark.svg">
+  <img alt="Fishmarket, one file, one link, gone when done: the AI agent asks Fishmarket for transfers over MCP and holds only receipts; the transfer helper next to the agent streams the bytes over HTTPS from and to its own local files; the person's browser downloads or uploads over HTTPS with the link and token the agent handed over. Once the person presses Download, that browser has ten minutes; the link lasts until the transfer expires, after 24 hours. The server keeps one file per transfer in its stall, gone after the download or once the agent acknowledges it. The bytes never pass through MCP." src="../docs/fishmarket.svg">
+</picture>
+
 ## Why
 
 The agent's workspace and the person's browser may be on different machines.

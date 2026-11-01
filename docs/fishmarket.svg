@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680pt" height="805pt" viewBox="0 0 680 805">
+<rect x="0" y="0" width="680" height="805" fill="#ffffff"/>
+<text x="20.0" y="36.0" font-family="Helvetica,Arial,sans-serif" font-size="18" font-weight="bold" fill="#111111" xml:space="preserve">Fishmarket: one file, one link, gone when done</text>
+<text x="20.0" y="56.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Container view · Fishmarket 0.1.14</text>
+<text x="20.0" y="72.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Handovers between an agent's machine and a person's browser. The bytes never go through MCP.</text>
+<g class="edge"><title>agent->server</title><path fill="none" stroke="#587b96" stroke-width="1.4" d="M165.3,174.0 L270.8,248.8"/><polygon fill="#587b96" stroke="#587b96" points="278.1,254.0 273.1,245.5 268.4,252.1"/></g>
+<g class="edge"><title>agent->helper</title><path fill="none" stroke="#9b784b" stroke-dasharray="1.5,4" stroke-linecap="round" stroke-width="2" d="M116.0,174.0 L116.0,245.0"/><polygon fill="#9b784b" stroke="#9b784b" points="116.0,254.0 120.0,245.0 112.0,245.0"/></g>
+<g class="edge"><title>helper->server</title><path fill="none" stroke="#3f7a72" stroke-width="1.4" d="M212.0,296.5 L233.0,296.5"/><polygon fill="#3f7a72" stroke="#3f7a72" points="242.0,296.5 233.0,292.5 233.0,300.5"/></g>
+<g class="edge"><title>person->server</title><path fill="none" stroke="#3f7a72" stroke-width="1.4" d="M510.7,174.0 L405.2,248.8"/><polygon fill="#3f7a72" stroke="#3f7a72" points="397.9,254.0 407.6,252.1 402.9,245.5"/></g>
+<g class="edge"><title>agent->person</title><path fill="none" stroke="#8c8d87" stroke-dasharray="7,4" stroke-width="1.4" d="M212.0,139.0 L455.0,139.0"/><polygon fill="#8c8d87" stroke="#8c8d87" points="464.0,139.0 455.0,135.0 455.0,143.0"/></g>
+<g class="edge"><title>server->stall</title><path fill="none" stroke="#9b784b" stroke-dasharray="1.5,4" stroke-linecap="round" stroke-width="2" d="M338.0,339.0 L338.0,385.0"/><polygon fill="#9b784b" stroke="#9b784b" points="338.0,394.0 342.0,385.0 334.0,385.0"/></g>
+<g class="node"><title>agent</title><rect x="20" y="104" width="192" height="70" fill="#edf2fa" stroke="#7489a5" stroke-width="1.2"/>
+<text x="30.0" y="122.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">AI agent</text>
+<text x="30.0" y="137.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">[AI client · over MCP]</text>
+<text x="30.0" y="152.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">asks for transfers; holds</text>
+<text x="30.0" y="167.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">only receipts</text>
+<path transform="translate(180,112) scale(0.917)" d="M3.5 4.5h17v11.5H10l-5 4v-4H3.5z M7.5 9h9 M7.5 12h6" fill="none" stroke="#7489a5" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>person</title><rect x="464" y="104" width="192" height="70" fill="#edf2fa" stroke="#7489a5" stroke-width="1.2"/>
+<text x="474.0" y="122.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Person</text>
+<text x="474.0" y="137.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">[a web browser]</text>
+<text x="474.0" y="152.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">downloads or uploads with</text>
+<text x="474.0" y="167.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">the link and its token</text>
+<path transform="translate(624,112) scale(0.917)" d="M12 3.5a4 4 0 1 1 0 8a4 4 0 1 1 0-8z M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7" fill="none" stroke="#7489a5" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>helper</title><rect x="20" y="254" width="192" height="85" fill="#edf5ef" stroke="#7a9783" stroke-width="1.2"/>
+<text x="30.0" y="272.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Transfer helper</text>
+<text x="30.0" y="287.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">[a command · agent side]</text>
+<text x="30.0" y="302.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">boring-fishmarket-transfer:</text>
+<text x="30.0" y="317.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">streams bytes from and to</text>
+<text x="30.0" y="332.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">its own local files</text>
+<path transform="translate(180,262) scale(0.917)" d="M12 2.5a9.5 9.5 0 1 1 0 19a9.5 9.5 0 1 1 0-19z M10 8l6 4-6 4z" fill="none" stroke="#7a9783" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>server</title><rect x="242" y="254" width="192" height="85" fill="#edf5ef" stroke="#7a9783" stroke-width="1.2"/>
+<text x="252.0" y="272.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Fishmarket</text>
+<text x="252.0" y="287.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">[MCP and HTTPS server]</text>
+<text x="252.0" y="302.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">receipts over MCP, bytes</text>
+<text x="252.0" y="317.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">over HTTPS; a transfer</text>
+<text x="252.0" y="332.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">expires after 24 hours</text>
+<path transform="translate(402,262) scale(0.917)" d="M9 6.5 3.5 12 9 17.5 M15 6.5 20.5 12 15 17.5" fill="none" stroke="#7a9783" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>stall</title><rect x="242" y="394" width="192" height="85" fill="#edf5ef" stroke="#7a9783" stroke-width="1.2"/>
+<text x="252.0" y="412.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">The stall</text>
+<text x="252.0" y="427.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">[state folder · SQLite]</text>
+<text x="252.0" y="442.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">one file per transfer; gone</text>
+<text x="252.0" y="457.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">after the download, or once</text>
+<text x="252.0" y="472.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">the agent acknowledges</text>
+<path transform="translate(402,402) scale(0.917)" d="M6 2.5h8.5l4 4v15H6z M14.5 2.5v4h4 M9 12h6 M9 15.5h6" fill="none" stroke="#7a9783" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="20.0" y="513.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Read the picture</text>
+<text x="20.0" y="529.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#57765f" xml:space="preserve">Sage box · the Pond family</text>
+<text x="20.0" y="545.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#526c91" xml:space="preserve">Pale blue box · a person, their client</text>
+<text x="20.0" y="561.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Arrow: from caller to callee</text>
+<text x="242.0" y="513.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Lines</text>
+<text x="242.0" y="529.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#587b96" xml:space="preserve">Blue · MCP, wherever it runs</text>
+<text x="242.0" y="545.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#3f7a72" xml:space="preserve">Teal · plain HTTPS (a browser, bytes)</text>
+<text x="242.0" y="561.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#9b784b" xml:space="preserve">Dotted ochre · not MCP, local:</text>
+<text x="242.0" y="577.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">a socket, a file, a command</text>
+<text x="242.0" y="593.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#8c8d87" xml:space="preserve">Dashed grey · handed over, not a call</text>
+<text x="242.0" y="609.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve"></text>
+<text x="242.0" y="625.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Two journeys</text>
+<text x="242.0" y="641.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Agent to person: the helper deposits</text>
+<text x="242.0" y="657.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">the file with size and SHA-256; once</text>
+<text x="242.0" y="673.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">the person presses Download, that</text>
+<text x="242.0" y="689.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">browser has ten minutes; the link lasts</text>
+<text x="242.0" y="705.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">until the transfer expires.</text>
+<text x="242.0" y="721.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Person to agent: an upload link with</text>
+<text x="242.0" y="737.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">a size limit; the helper collects,</text>
+<text x="242.0" y="753.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">checks, publishes, acknowledges;</text>
+<text x="242.0" y="769.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">then the file is gone.</text>
+<text x="464.0" y="513.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Scope and limits</text>
+<text x="464.0" y="529.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">A handover, not an archive: keep the</text>
+<text x="464.0" y="545.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">source until it arrived. The server</text>
+<text x="464.0" y="561.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">never reads a path or fetches a URL.</text>
+</svg>

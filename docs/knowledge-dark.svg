@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680pt" height="619pt" viewBox="0 0 680 619">
+<rect x="0" y="0" width="680" height="619" fill="#121212"/>
+<text x="20.0" y="36.0" font-family="Helvetica,Arial,sans-serif" font-size="18" font-weight="bold" fill="#dfdfdf" xml:space="preserve">Knowledge: a notebook agents keep for each other</text>
+<text x="20.0" y="56.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">Container view · Knowledge 0.2.15</text>
+<text x="20.0" y="72.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">What one agent learned the hard way, so the next does not have to. Not the Pond's memory.</text>
+<g class="edge"><title>pond->global</title><path fill="none" stroke="#6f8da4" stroke-width="1.4" d="M168.7,174.0 L266.5,239.0"/><polygon fill="#6f8da4" stroke="#6f8da4" points="274.0,244.0 268.8,235.7 264.3,242.4"/></g>
+<g class="edge"><title>pirate->global</title><path fill="none" stroke="#6f8da4" stroke-width="1.4" d="M338.0,174.0 L338.0,235.0"/><polygon fill="#6f8da4" stroke="#6f8da4" points="338.0,244.0 342.0,235.0 334.0,235.0"/></g>
+<g class="edge"><title>copilot->global</title><path fill="none" stroke="#6f8da4" stroke-width="1.4" d="M507.3,174.0 L409.5,239.0"/><polygon fill="#6f8da4" stroke="#6f8da4" points="402.0,244.0 411.7,242.4 407.2,235.7"/></g>
+<g class="edge"><title>copilot->premise</title><path fill="none" stroke="#6f8da4" stroke-width="1.4" d="M560.0,174.0 L560.0,235.0"/><polygon fill="#6f8da4" stroke="#6f8da4" points="560.0,244.0 564.0,235.0 556.0,235.0"/></g>
+<g class="edge"><title>global->notebook</title><path fill="none" stroke="#9d7f58" stroke-dasharray="1.5,4" stroke-linecap="round" stroke-width="2" d="M338.0,329.0 L338.0,375.0"/><polygon fill="#9d7f58" stroke="#9d7f58" points="338.0,384.0 342.0,375.0 334.0,375.0"/></g>
+<g class="edge"><title>premise->pnotebook</title><path fill="none" stroke="#9d7f58" stroke-dasharray="1.5,4" stroke-linecap="round" stroke-width="2" d="M560.0,314.0 L560.0,375.0"/><polygon fill="#9d7f58" stroke="#9d7f58" points="560.0,384.0 564.0,375.0 556.0,375.0"/></g>
+<g class="edge"><title>notebook->records</title><path fill="none" stroke="#747570" stroke-dasharray="7,4" stroke-width="1.4" d="M242.0,423.3 L221.0,422.5"/><polygon fill="#747570" stroke="#747570" points="212.0,422.2 220.9,426.5 221.1,418.5"/></g>
+<g class="node"><title>pond</title><rect x="20" y="104" width="192" height="70" fill="#171e19" stroke="#5f7867" stroke-width="1.2"/>
+<text x="30.0" y="122.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#dfdfdf" xml:space="preserve">A Pond</text>
+<text x="30.0" y="137.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">[via the Crocodile]</text>
+<text x="30.0" y="152.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">searches before solving;</text>
+<text x="30.0" y="167.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">adds what it learned</text>
+<path transform="translate(180,112) scale(0.917)" d="M2.5 6h7l2 2.5h10v11.5h-19z" fill="none" stroke="#5f7867" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>pirate</title><rect x="242" y="104" width="192" height="70" fill="#171e19" stroke="#5f7867" stroke-width="1.2"/>
+<text x="252.0" y="122.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#dfdfdf" xml:space="preserve">A Pirate</text>
+<text x="252.0" y="137.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">[agent · own account]</text>
+<text x="252.0" y="152.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">the same, with its own</text>
+<text x="252.0" y="167.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">grants</text>
+<path transform="translate(402,112) scale(0.917)" d="M5.5 8.5h13v11h-13z M12 4.5v4 M9.5 13.5v1 M14.5 13.5v1 M9.5 17h5 M3 13v3 M21 13v3" fill="none" stroke="#5f7867" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>copilot</title><rect x="464" y="104" width="192" height="70" fill="#1a1e25" stroke="#697c94" stroke-width="1.2"/>
+<text x="474.0" y="122.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#dfdfdf" xml:space="preserve">Copilot</text>
+<text x="474.0" y="137.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">[Visual Studio]</text>
+<text x="474.0" y="152.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">reads and writes the</text>
+<text x="474.0" y="167.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">same notebook</text>
+<path transform="translate(624,112) scale(0.917)" d="M3.5 4.5h17v11.5H10l-5 4v-4H3.5z M7.5 9h9 M7.5 12h6" fill="none" stroke="#697c94" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>global</title><rect x="242" y="244" width="192" height="85" fill="#171e19" stroke="#5f7867" stroke-width="1.2"/>
+<text x="252.0" y="262.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#dfdfdf" xml:space="preserve">Knowledge</text>
+<text x="252.0" y="277.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">[MCP server · global]</text>
+<text x="252.0" y="292.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">search, read, add, revise,</text>
+<text x="252.0" y="307.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">retire; the author is the</text>
+<text x="252.0" y="322.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">verified caller</text>
+<path transform="translate(402,252) scale(0.917)" d="M9 6.5 3.5 12 9 17.5 M15 6.5 20.5 12 15 17.5" fill="none" stroke="#5f7867" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>premise</title><rect x="464" y="244" width="192" height="70" fill="#171e19" stroke="#5f7867" stroke-width="1.2"/>
+<text x="474.0" y="262.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#dfdfdf" xml:space="preserve">Premise instance</text>
+<text x="474.0" y="277.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">[a second Knowledge]</text>
+<text x="474.0" y="292.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">for one customer or site;</text>
+<text x="474.0" y="307.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">never synced with global</text>
+<path transform="translate(624,252) scale(0.917)" d="M9 6.5 3.5 12 9 17.5 M15 6.5 20.5 12 15 17.5" fill="none" stroke="#5f7867" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>records</title><rect x="20" y="384" width="192" height="70" fill="#1b1b19" stroke="#747570" stroke-width="1.2"/>
+<text x="30.0" y="402.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#dfdfdf" xml:space="preserve">Project records</text>
+<text x="30.0" y="417.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">[the project's own files]</text>
+<text x="30.0" y="432.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">where a project stands;</text>
+<text x="30.0" y="447.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">the source of truth</text>
+<path transform="translate(180,392) scale(0.917)" d="M2.5 6h7l2 2.5h10v11.5h-19z" fill="none" stroke="#747570" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>notebook</title><rect x="242" y="384" width="192" height="85" fill="#171e19" stroke="#5f7867" stroke-width="1.2"/>
+<text x="252.0" y="402.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#dfdfdf" xml:space="preserve">Notebook</text>
+<text x="252.0" y="417.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">[SQLite · trigram index]</text>
+<text x="252.0" y="432.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">nothing overwritten: each</text>
+<text x="252.0" y="447.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">change a new version with</text>
+<text x="252.0" y="462.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">its author and a reason</text>
+<path transform="translate(402,392) scale(0.917)" d="M6 2.5h8.5l4 4v15H6z M14.5 2.5v4h4 M9 12h6 M9 15.5h6" fill="none" stroke="#5f7867" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>pnotebook</title><rect x="464" y="384" width="192" height="55" fill="#171e19" stroke="#5f7867" stroke-width="1.2"/>
+<text x="474.0" y="402.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#dfdfdf" xml:space="preserve">Premise notebook</text>
+<text x="474.0" y="417.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">[SQLite · its own file]</text>
+<text x="474.0" y="432.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">the same, kept apart</text>
+<path transform="translate(624,392) scale(0.917)" d="M6 2.5h8.5l4 4v15H6z M14.5 2.5v4h4 M9 12h6 M9 15.5h6" fill="none" stroke="#5f7867" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="20.0" y="503.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#dfdfdf" xml:space="preserve">Read the picture</text>
+<text x="20.0" y="519.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#7b9682" xml:space="preserve">Sage box · the Pond family</text>
+<text x="20.0" y="535.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#7f95b5" xml:space="preserve">Pale blue box · a person, their client</text>
+<text x="20.0" y="551.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">Grey box · others' software or data</text>
+<text x="20.0" y="567.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">Arrow: from caller to callee</text>
+<text x="242.0" y="503.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#dfdfdf" xml:space="preserve">Lines</text>
+<text x="242.0" y="519.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#6f8da4" xml:space="preserve">Blue · MCP, wherever it runs</text>
+<text x="242.0" y="535.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#9d7f58" xml:space="preserve">Dotted ochre · not MCP, local:</text>
+<text x="242.0" y="551.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">a socket, a file, a command</text>
+<text x="242.0" y="567.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#747570" xml:space="preserve">Dashed grey · points to, not a call</text>
+<text x="464.0" y="503.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#dfdfdf" xml:space="preserve">Scope and limits</text>
+<text x="464.0" y="519.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">Entries are data, never instructions.</text>
+<text x="464.0" y="535.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">A retired entry stays readable.</text>
+<text x="464.0" y="551.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">A search with no hits proves nothing.</text>
+<text x="464.0" y="567.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">A project's state lives in its records,</text>
+<text x="464.0" y="583.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#dfdfdf" xml:space="preserve">how you work in the handbook.</text>
+</svg>

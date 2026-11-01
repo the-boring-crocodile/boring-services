@@ -54,14 +54,20 @@ def _every_address(bind: str) -> bool:
         return False  # a host name: the kit resolves it to its addresses
 
 
-def _service(path: Any, where: str, needs_oauth: bool) -> ServiceConfig:
+def _service(path: Any, where: str) -> ServiceConfig:
+    """A front end's ServiceConfig: whatever the kit accepts (the Crocodile's tokens, its own sign-in,
+    access keys), except its own sign-in with Pond registration."""
     try:
         config = ServiceConfig(path)
     except (OSError, ValueError) as error:
         raise ConfigError(f"{where}: {error}") from None
-    if needs_oauth and config.verifier is None:
-        raise ConfigError(f"{where}: the ferry needs `oauth` (the Crocodile by introspection): a third-party "
-                          "server reaches the Pond only with its tokens")
+    # A Pond reaches services only with the Crocodile's tokens: a front end that signs people in
+    # itself would register and then refuse every call from the Pond. (The kit should own this
+    # rule for every service; boring-pond-common TODO.)
+    if config.issuer is not None and config.watchdog is not None:
+        raise ConfigError(f"{where}: `issuer` and `pond` exclude each other: a Pond calls only with the "
+                          "Crocodile's tokens (`oauth`); a front end with its own sign-in serves a person's "
+                          "client directly")
     if _every_address(config.bind):
         raise ConfigError(f"{where}: bind the ferry's own address on its default network (172.16.46.2 in the "
                           "template), or loopback, not every address: the backends share the ferry's other "
@@ -98,13 +104,16 @@ def prepare(path: Path, state_dir: Path | None, log_calls: bool) -> tuple[list[F
         backend_front = isinstance(spec, Backend)
         group = "backends" if backend_front else "gateways"
         assert spec.service is not None
-        config = _service(spec.service, f"{group}.{spec.name}.service", needs_oauth=backend_front)
+        config = _service(spec.service, f"{group}.{spec.name}.service")
         unique(spec.name, config)
         if backend_front:
             server = front(spec, upstreams[spec.name], config, calls(spec.name))
-            app = HealthGate(config.app(server), upstreams[spec.name])
+            # Only a front end that registers with a Pond answers the heartbeat with its backend's
+            # state: that answer comes before the token check, and without a Pond nobody needs it.
+            app = (HealthGate(config.app(server), upstreams[spec.name]) if config.watchdog is not None
+                   else ArrivalGate(config.app(server)))
         else:
-            # A gateway may take the box's access keys or the Crocodile's tokens.
+            # Like a backend's front end, a gateway signs callers in as its ServiceConfig says.
             carried = {name: Carried(by_name[name], upstreams[name], config.call_limit) for name in spec.backends}
             server = gateway_front(spec, carried, config, calls(spec.name))
             app = ArrivalGate(config.app(server))

@@ -4,6 +4,11 @@ Search D365 source and labels through MCP, from a snapshot of your development
 environment. The agent can inspect code without scanning the source tree on
 every question or having D365 installed on its own machine.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/sourcecache-dark.svg">
+  <img alt="Sourcecache, build a snapshot once and search it anywhere: Copilot on the dev box and a Linux Pond with no D365 installed call the read-only Sourcecache MCP server. An administrator runs the build once per D365 version; it reads the D365 source in PackagesLocalDirectory, which is yours under the terms you got it on, and writes an immutable SQLite snapshot with a trigram index that names its D365 version. The server serves that snapshot and older ones side by side with four tools: source_info, source_search, source_element and label_lookup." src="../docs/sourcecache.svg">
+</picture>
+
 ## Why
 
 Developing for Dynamics 365 Finance and Supply Chain means reading the
@@ -63,7 +68,7 @@ Building is a local administrator operation, never an MCP tool:
 
     boring-sourcecache-d365 build --source PackagesLocalDirectory --db snapshot-v2.db --name application-v2 \
         --application-version 10.0.2790.46 --platform-version 7.0.8199.32 --release-version 10.0.49 \
-        --version-evidence "InstallationRecords on the VHD, read 2026-10-15"
+        --version-evidence "InstallationRecords on the VHD"
 
 Replace the example paths and version values with this environment's own.
 A snapshot gets a UUID `snapshot_id` and a receipt (name, application and
@@ -85,7 +90,7 @@ Snapshots from builders before 0.1.16 carry descriptor versions;
 **Readers.** `--readers N` (1-64, default 16) reads N files at once; one SQLite
 connection writes them in the tree's order, so the snapshot's content is the
 same for any N. A full PackagesLocalDirectory build is disk-bound on network
-storage (measured 2026-10-08 on Azure storage: 16 readers 18.5x, 32 readers
+storage (measured on Azure storage: 16 readers 18.5x, 32 readers
 36.4x the reads of one); on a local disk with the files cached it changes
 little, since parsing and indexing then dominate. At most 2N files are read
 ahead. The build writes to a

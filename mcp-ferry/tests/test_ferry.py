@@ -388,13 +388,14 @@ def test_two_backends_cannot_share_a_service_identity(tmp_path):
         service.cp.close()
 
 
-def test_a_front_end_without_crocodile_tokens_is_refused(tmp_path):
+def test_a_backend_front_end_may_take_access_keys(tmp_path):
+    """Every front end is a kit front end: a backend's own takes what a gateway takes."""
     (tmp_path / "keys.json").write_text("{}")
     (tmp_path / "s.json").write_text(json.dumps({"url": "http://127.0.0.1:18600/mcp", "keys": {"file": "keys.json"}}))
     (tmp_path / "config.json").write_text(json.dumps({"backends": {"a": {
         "service": "s.json", "upstream": {"url": "http://x/mcp"}}}}))
-    with pytest.raises(ConfigError):
-        prepare(tmp_path / "config.json", None, False)
+    fronts, upstreams = prepare(tmp_path / "config.json", None, False)
+    assert [f.name for f in fronts] == ["a"] and len(upstreams) == 1
 
 
 def test_sigterm_stops_every_front_end(tmp_path):
@@ -527,3 +528,89 @@ def test_a_gateway_may_take_the_box_access_keys(tmp_path):
         "gateways": {"g": {"service": "g.json", "backends": ["a"]}}}))
     fronts, upstreams = prepare(tmp_path / "config.json", None, False)
     assert [f.name for f in fronts] == ["g"] and len(upstreams) == 1
+
+
+def own_signin(tmp_path, name, port, pond=None):
+    """A front end that signs its person in itself: Claude on the web, no Crocodile."""
+    (tmp_path / "approval").write_text("fixture-approval-only")
+    spec = {"url": f"http://127.0.0.1:{port}/mcp", "bind": "127.0.0.1", "port": port,
+            "issuer": {"database": f"{name}-issuer.db", "approval_secret_file": "approval", "subject": "robin"},
+            "access": [{"subject": "robin", "role": "writer"}]}
+    if pond is not None:
+        spec["pond"] = pond
+    (tmp_path / f"{name}.json").write_text(json.dumps(spec))
+    return f"{name}.json"
+
+
+def signin_and_challenge(front, port):
+    """The front end's own sign-in metadata, and its answer to a call without a token."""
+    async def look():
+        import httpx2
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=front.app),
+                                      base_url=f"http://127.0.0.1:{port}") as client:
+            metadata = await client.get("/.well-known/oauth-authorization-server")
+            unsigned = await client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+            return metadata, unsigned
+    return asyncio.run(look())
+
+
+@pytest.mark.parametrize("kind", ["backend", "gateway"])
+def test_a_front_end_may_sign_its_person_in_itself(tmp_path, kind):
+    """Without a Pond: a backend's own front end, or a gateway over several, with its own sign-in."""
+    service = own_signin(tmp_path, "door", 18601)
+    upstream = {"upstream": {"url": "http://127.0.0.1:1/mcp"}}
+    config = ({"backends": {"a": {**upstream, "service": service}}} if kind == "backend" else
+              {"backends": {"a": upstream, "b": upstream}, "gateways": {"g": {"service": service, "backends": ["a", "b"]}}})
+    (tmp_path / "config.json").write_text(json.dumps(config))
+    fronts, _ = prepare(tmp_path / "config.json", None, False)
+    assert len(fronts) == 1 and fronts[0].config.issuer is not None and fronts[0].config.watchdog is None
+    metadata, unsigned = signin_and_challenge(fronts[0], 18601)
+    assert metadata.status_code == 200 and metadata.json()["issuer"].startswith("http://127.0.0.1:18601")
+    assert unsigned.status_code == 401
+
+
+@pytest.mark.parametrize("kind", ["backend", "gateway"])
+def test_own_signin_and_pond_registration_exclude_each_other(tmp_path, kind):
+    service = Service()
+    try:
+        write_config(tmp_path, service, "http://127.0.0.1:1/mcp")
+        pond = {"url": service.cp.url, "client_id": "fixture", "secret_file": "secret"}
+        door = own_signin(tmp_path, "door", 18601, pond=pond)
+        config = json.loads((tmp_path / "config.json").read_text())
+        if kind == "backend":
+            config["backends"]["fixture"]["service"] = door
+        else:
+            config["gateways"] = {"g": {"service": door, "backends": ["fixture"]}}
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        with pytest.raises(ConfigError, match="`issuer` and `pond` exclude each other"):
+            prepare(tmp_path / "config.json", None, False)
+    finally:
+        service.cp.close()
+
+
+def test_a_front_end_without_a_pond_keeps_its_backend_state_to_itself(tmp_path):
+    """The heartbeat answer (503 while the backend is down) comes before the token check: only a
+    front end that registers with a Pond gives it."""
+    async def scenario():
+        async with ferry_with(tmp_path, f"http://127.0.0.1:{free_port()}/mcp") as (svc, _):
+            response = await discover_request(svc)
+            assert response.status_code != 503 and "not reachable" not in response.text
+    asyncio.run(scenario())
+
+
+def test_a_pond_and_a_person_reach_one_backend_through_two_front_ends(tmp_path):
+    """The backend's own front end towards the Pond (`oauth`, `pond`), and a gateway with its own
+    sign-in for a person's client carrying the same backend: both at once, one upstream."""
+    service = Service()
+    try:
+        write_config(tmp_path, service, "http://127.0.0.1:1/mcp", pond=True)
+        config = json.loads((tmp_path / "config.json").read_text())
+        config["gateways"] = {"tools": {"service": own_signin(tmp_path, "tools", 18601), "backends": ["fixture"]}}
+        (tmp_path / "config.json").write_text(json.dumps(config))
+        fronts, upstreams = prepare(tmp_path / "config.json", None, False)
+        assert [f.name for f in fronts] == ["fixture", "tools"] and len(upstreams) == 1
+        pond_front, person = fronts
+        assert pond_front.config.watchdog is not None and pond_front.config.issuer is None
+        assert person.config.issuer is not None and person.config.watchdog is None
+    finally:
+        service.cp.close()

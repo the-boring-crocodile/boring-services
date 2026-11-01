@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="694pt" height="655pt" viewBox="0 0 694 655">
+<rect x="0" y="0" width="694" height="655" fill="#ffffff"/>
+<text x="20.0" y="36.0" font-family="Helvetica,Arial,sans-serif" font-size="18" font-weight="bold" fill="#111111" xml:space="preserve">Ferry: someone else's MCP server, behind a door</text>
+<text x="20.0" y="56.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Container view · MCP Ferry 0.1.4</text>
+<text x="20.0" y="72.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Servers you did not write stay as they are, on a private network; each front end signs callers in.</text>
+<g class="cluster"><rect x="6" y="240" width="664" height="117" fill="none" stroke="#929a96" stroke-width="1"/>
+<text x="196.0" y="347.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Ferry · one container</text>
+</g>
+<g class="cluster"><rect x="8" y="392" width="216" height="113" fill="none" stroke="#929a96" stroke-width="1"/>
+<text x="18.0" y="495.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">A private network; only the ferry joins</text>
+</g>
+<g class="cluster"><rect x="452" y="392" width="216" height="98" fill="none" stroke="#929a96" stroke-width="1"/>
+<text x="462.0" y="480.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Another private network</text>
+</g>
+<g class="edge"><title>pond->door</title><path fill="none" stroke="#587b96" stroke-width="1.4" d="M116.0,174.0 L116.0,245.0"/><polygon fill="#587b96" stroke="#587b96" points="116.0,254.0 120.0,245.0 112.0,245.0"/></g>
+<g class="edge"><title>door->croc</title><path fill="none" stroke="#587b96" stroke-width="1.4" d="M167.8,254.0 L278.7,179.0"/><polygon fill="#587b96" stroke="#587b96" points="286.2,174.0 276.5,175.7 281.0,182.4"/></g>
+<g class="edge"><title>claude->gateway</title><path fill="none" stroke="#587b96" stroke-width="1.4" d="M560.0,174.0 L560.0,245.0"/><polygon fill="#587b96" stroke="#587b96" points="560.0,254.0 564.0,245.0 556.0,245.0"/></g>
+<g class="edge"><title>door->ha</title><path fill="none" stroke="#587b96" stroke-width="1.4" d="M116.0,324.0 L116.0,395.0"/><polygon fill="#587b96" stroke="#587b96" points="116.0,404.0 120.0,395.0 112.0,395.0"/></g>
+<g class="edge"><title>gateway->ha</title><path fill="none" stroke="#587b96" stroke-width="1.4" d="M464.0,321.4 L220.5,403.7"/><polygon fill="#587b96" stroke="#587b96" points="212.0,406.6 221.8,407.5 219.2,399.9"/></g>
+<g class="edge"><title>gateway->other</title><path fill="none" stroke="#587b96" stroke-width="1.4" d="M560.0,324.0 L560.0,395.0"/><polygon fill="#587b96" stroke="#587b96" points="560.0,404.0 564.0,395.0 556.0,395.0"/></g>
+<g class="node"><title>pond</title><rect x="20" y="104" width="192" height="70" fill="#edf5ef" stroke="#7a9783" stroke-width="1.2"/>
+<text x="30.0" y="122.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">A Pond</text>
+<text x="30.0" y="137.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">[via the Crocodile]</text>
+<text x="30.0" y="152.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">calls with a token the</text>
+<text x="30.0" y="167.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Crocodile minted for it</text>
+<path transform="translate(180,112) scale(0.917)" d="M2.5 6h7l2 2.5h10v11.5h-19z" fill="none" stroke="#7a9783" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>croc</title><rect x="242" y="104" width="192" height="70" fill="#edf5ef" stroke="#7a9783" stroke-width="1.2"/>
+<text x="252.0" y="122.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Crocodile</text>
+<text x="252.0" y="137.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">[MCP server · sign-in]</text>
+<text x="252.0" y="152.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">mints the Pond's tokens;</text>
+<text x="252.0" y="167.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">checks them for the ferry</text>
+<path transform="translate(402,112) scale(0.917)" d="M9 6.5 3.5 12 9 17.5 M15 6.5 20.5 12 15 17.5" fill="none" stroke="#7a9783" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>claude</title><rect x="464" y="104" width="192" height="70" fill="#edf2fa" stroke="#7489a5" stroke-width="1.2"/>
+<text x="474.0" y="122.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Claude on the web</text>
+<text x="474.0" y="137.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">[a person's client]</text>
+<text x="474.0" y="152.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">signs in at the gateway</text>
+<text x="474.0" y="167.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">with the approval secret</text>
+<path transform="translate(624,112) scale(0.917)" d="M3.5 4.5h17v11.5H10l-5 4v-4H3.5z M7.5 9h9 M7.5 12h6" fill="none" stroke="#7489a5" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>door</title><rect x="20" y="254" width="192" height="70" fill="#edf5ef" stroke="#7a9783" stroke-width="1.2"/>
+<text x="30.0" y="272.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Pond front end</text>
+<text x="30.0" y="287.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">[oauth · pond]</text>
+<text x="30.0" y="302.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">registers the backend as</text>
+<text x="30.0" y="317.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">one Pond service</text>
+<path transform="translate(180,262) scale(0.917)" d="M3.5 8h14 M14.5 5l3 3-3 3 M20.5 16h-14 M9.5 13l-3 3 3 3" fill="none" stroke="#7a9783" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>gateway</title><rect x="464" y="254" width="192" height="70" fill="#edf5ef" stroke="#7a9783" stroke-width="1.2"/>
+<text x="474.0" y="272.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Gateway</text>
+<text x="474.0" y="287.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">[own sign-in · issuer]</text>
+<text x="474.0" y="302.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">four tools: service_list,</text>
+<text x="474.0" y="317.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">describe, read, call</text>
+<path transform="translate(624,262) scale(0.917)" d="M3.5 8h14 M14.5 5l3 3-3 3 M20.5 16h-14 M9.5 13l-3 3 3 3" fill="none" stroke="#7a9783" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>ha</title><rect x="20" y="404" width="192" height="70" fill="#f5f5f3" stroke="#8c8d87" stroke-width="1.2"/>
+<text x="30.0" y="422.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">ha-mcp</text>
+<text x="30.0" y="437.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">[MCP server · not ours]</text>
+<text x="30.0" y="452.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">checks nothing but its</text>
+<text x="30.0" y="467.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">URL path</text>
+<path transform="translate(180,412) scale(0.917)" d="M12 8.5a3.5 3.5 0 1 1 0 7a3.5 3.5 0 1 1 0-7z M12 2.5v3 M12 18.5v3 M2.5 12h3 M18.5 12h3 M5.3 5.3l2.1 2.1 M16.6 16.6l2.1 2.1 M5.3 18.7l2.1-2.1 M16.6 7.4l2.1-2.1" fill="none" stroke="#8c8d87" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<g class="node"><title>other</title><rect x="464" y="404" width="192" height="55" fill="#f5f5f3" stroke="#8c8d87" stroke-width="1.2"/>
+<text x="474.0" y="422.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Another server</text>
+<text x="474.0" y="437.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">[MCP server · not ours]</text>
+<text x="474.0" y="452.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">no sign-in of its own</text>
+<path transform="translate(624,412) scale(0.917)" d="M12 8.5a3.5 3.5 0 1 1 0 7a3.5 3.5 0 1 1 0-7z M12 2.5v3 M12 18.5v3 M2.5 12h3 M18.5 12h3 M5.3 5.3l2.1 2.1 M16.6 16.6l2.1 2.1 M5.3 18.7l2.1-2.1 M16.6 7.4l2.1-2.1" fill="none" stroke="#8c8d87" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+<text x="20.0" y="539.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Read the picture</text>
+<text x="20.0" y="555.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#57765f" xml:space="preserve">Sage box · the Pond family</text>
+<text x="20.0" y="571.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#526c91" xml:space="preserve">Pale blue box · a person, their client</text>
+<text x="20.0" y="587.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Grey box · others' software or data</text>
+<text x="20.0" y="603.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Frame: its label says what it is</text>
+<text x="20.0" y="619.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Arrow: from caller to callee</text>
+<text x="242.0" y="539.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Lines</text>
+<text x="242.0" y="555.0" font-family="Helvetica,Arial,sans-serif" font-size="10" font-weight="bold" fill="#587b96" xml:space="preserve">Blue · MCP, wherever it runs</text>
+<text x="464.0" y="539.0" font-family="Helvetica,Arial,sans-serif" font-size="12" font-weight="bold" fill="#111111" xml:space="preserve">Scope and limits</text>
+<text x="464.0" y="555.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Each front end is its own way in; one</text>
+<text x="464.0" y="571.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">backend may sit behind both.</text>
+<text x="464.0" y="587.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Without a Pond: only the right half.</text>
+<text x="464.0" y="603.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">The ferry forwards calls; it neither</text>
+<text x="464.0" y="619.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">hosts nor starts the backends.</text>
+</svg>
