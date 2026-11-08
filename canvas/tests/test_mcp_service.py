@@ -235,6 +235,13 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
                                   "sub": "pondA", "client_id": "control-plane"}
         self.cp.tokens["goodB"] = dict(self.cp.tokens["good"], sub="pondB")
 
+    async def test_published_tool_list_budget(self) -> None:
+        for unsafe_url_auth in (False, True):
+            server = build_server(self.store, PUBLIC, {}, None, unsafe_url_auth)
+            tools = [t.model_dump(by_alias=True, exclude_none=True) for t in await server.list_tools()]
+            self.assertLessEqual(len(json.dumps(tools, ensure_ascii=False, separators=(",", ":"))),
+                                 6_774)  # 6,224 + 550, including the optional browser-link tool
+
     def app_for(self, unsafe_url_auth: bool = False) -> Any:
         config = ServiceConfig(self.config)
         return config.app(build_server(self.store, PUBLIC, config.auth, self.watchdog.pinged, unsafe_url_auth))

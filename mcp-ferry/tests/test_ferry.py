@@ -82,7 +82,8 @@ async def backend(port):
         await task
 
 
-def write_config(tmp_path, service, backend_url, tools=None, pond=False, name="fixture", own_url=OWN_URL):
+def write_config(tmp_path, service, backend_url, tools=None, pond=False, name="fixture", own_url=OWN_URL,
+                 timeout_seconds=None):
     (tmp_path / "secret").write_text("fixture-only")
     (tmp_path / f"{name}-url").write_text(backend_url + "\n")
     spec = {"url": own_url,
@@ -93,6 +94,8 @@ def write_config(tmp_path, service, backend_url, tools=None, pond=False, name="f
         spec["pond"] = {"url": service.cp.url, "client_id": "fixture", "secret_file": "secret"}
     (tmp_path / f"{name}.json").write_text(json.dumps(spec))
     backend_spec = {"service": f"{name}.json", "upstream": {"url_file": f"{name}-url"}}
+    if timeout_seconds is not None:
+        backend_spec["upstream"]["timeout_seconds"] = timeout_seconds
     if tools is not None:
         backend_spec["tools"] = tools
     (tmp_path / "config.json").write_text(json.dumps({"backends": {name: backend_spec}}))
@@ -100,9 +103,9 @@ def write_config(tmp_path, service, backend_url, tools=None, pond=False, name="f
 
 
 @asynccontextmanager
-async def ferry_with(tmp_path, backend_url, tools=None, pond=False):
+async def ferry_with(tmp_path, backend_url, tools=None, pond=False, timeout_seconds=None):
     service = Service()
-    path = write_config(tmp_path, service, backend_url, tools, pond)
+    path = write_config(tmp_path, service, backend_url, tools, pond, timeout_seconds=timeout_seconds)
     (front,), upstreams = prepare(path, tmp_path / "state", True)
     service.app = front.app
     async with service:
@@ -142,6 +145,73 @@ def test_allow_list_offers_only_named_tools(tmp_path):
             assert await svc.result("look", {"where": "a"}, "pond") == (False, "seen a")
             error, refused = await svc.result("switch", {"on": False}, "pond")
             assert error and refused["code"] == "not_found"
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("timeout_seconds", [None, 0.45])
+def test_backend_call_uses_its_configured_timeout(tmp_path, monkeypatch, timeout_seconds):
+    monkeypatch.setattr(ferry, "HTTP_TIMEOUT_SECONDS", 0.25)
+
+    async def scenario():
+        async with backend(free_port()) as url, ferry_with(
+                tmp_path, url, timeout_seconds=timeout_seconds) as (svc, front):
+            carried = front.server.carried
+            assert await svc.result("look", {"where": "warm"}, "pond") == (False, "seen warm")
+            reads = []
+
+            async def read_timeout(request):
+                reads.append(request.extensions["timeout"]["read"])
+
+            carried.upstream.http.event_hooks["request"].append(read_timeout)
+            error, result = await svc.result("slow", {"seconds": 0.65}, "pond")
+            assert reads and set(reads) == {timeout_seconds}
+            if timeout_seconds is None:
+                assert (error, result) == (False, "late")
+            else:
+                assert error and result["status"] == "failed" and result["code"] == "timeout"
+                assert "did not answer within 0.45 s" in result["message"]
+
+    asyncio.run(scenario())
+
+
+def test_listing_and_health_still_have_separate_caps(tmp_path, monkeypatch):
+    monkeypatch.setattr(ferry, "FETCH_CAP_SECONDS", 0.05)
+    # 0.3 s: the health request must reach the transport before its cap ends it; with 0.05 s a busy
+    # Windows test box sometimes cut it before the hook saw it (rc14 services suite, 2026-11-07)
+    monkeypatch.setattr(ferry, "HEALTH_SECONDS", 0.3)
+    monkeypatch.setattr(ferry, "HTTP_TIMEOUT_SECONDS", 0.4)
+
+    async def scenario():
+        async with ferry_with(tmp_path, "http://127.0.0.1:1/mcp") as (_, front):
+            carried = front.server.carried
+            upstream = carried.upstream
+            reads = []
+
+            async def hang(request):
+                reads.append(request.extensions["timeout"]["read"])
+                await asyncio.Event().wait()
+
+            upstream.http.event_hooks["request"].append(hang)
+            with pytest.raises(Failed, match="did not list its tools within 0.05 s") as failure:
+                await asyncio.wait_for(carried._capped_refresh(), timeout=1)
+            assert failure.value.code == "timeout"
+            assert not await asyncio.wait_for(upstream.healthy(), timeout=1)
+            assert reads == [0.4, 0.4]
+
+    asyncio.run(scenario())
+
+
+def test_tool_connection_refusal_still_fails_fast(tmp_path):
+    async def scenario():
+        port = free_port()
+        url = f"http://127.0.0.1:{port}/mcp"
+        async with ferry_with(tmp_path, url) as (svc, _):
+            async with backend(port):
+                assert await svc.result("look", {"where": "warm"}, "pond") == (False, "seen warm")
+            error, refused = await asyncio.wait_for(svc.result("look", {"where": "gone"}, "pond"), timeout=10)  # Windows needs ~2 s to report a refused connection
+            assert error and refused["status"] == "refused" and refused["code"] == "unavailable"
+            assert "accepts no connection" in refused["message"]
+
     asyncio.run(scenario())
 
 
@@ -467,6 +537,8 @@ def test_gateway_offers_four_tools_and_passes_calls_through(tmp_path):
                                                  "params": {"_meta": mcp_meta()}})
             tools = {t["name"]: t for t in listed.json()["result"]["tools"]}
             assert set(tools) == {"service_list", "service_describe", "service_read", "service_call"}
+            assert len(json.dumps(list(tools.values()), ensure_ascii=False,
+                                  separators=(",", ":"))) <= 2_159  # 1,459 + 700
             assert tools["service_read"]["annotations"]["readOnlyHint"] is True
             assert tools["service_call"]["annotations"]["readOnlyHint"] is False
             error, listing = await svc.result("service_list", {}, "meadow")
@@ -511,9 +583,7 @@ def test_gateway_configuration(tmp_path):
             ({"backends": {"a": base}}, "neither a service of its own nor a gateway"),
             ({"backends": {"a": base}, "gateways": {"g": {"service": "g.json", "backends": ["b"]}}}, "no backend 'b'"),
             ({"backends": {"a": base}, "gateways": {"a": {"service": "g.json", "backends": ["a"]}}}, "not a backend"),
-            ({"backends": {"a": base}, "gateways": {"g": {"service": "g.json", "backends": ["a", "a"]}}}, "each once"),
-            ({"backends": {"a": {**base, "guide_file": "missing.md"}},
-              "gateways": {"g": {"service": "g.json", "backends": ["a"]}}}, "guide_file cannot be read")):
+            ({"backends": {"a": base}, "gateways": {"g": {"service": "g.json", "backends": ["a", "a"]}}}, "each once")):
         (tmp_path / "config.json").write_text(json.dumps(config))
         with pytest.raises(ConfigError, match=message):
             read(tmp_path / "config.json")
@@ -582,7 +652,7 @@ def test_own_signin_and_pond_registration_exclude_each_other(tmp_path, kind):
         else:
             config["gateways"] = {"g": {"service": door, "backends": ["fixture"]}}
         (tmp_path / "config.json").write_text(json.dumps(config))
-        with pytest.raises(ConfigError, match="`issuer` and `pond` exclude each other"):
+        with pytest.raises(ConfigError, match="issuer and pond exclude each other"):
             prepare(tmp_path / "config.json", None, False)
     finally:
         service.cp.close()
@@ -614,3 +684,9 @@ def test_a_pond_and_a_person_reach_one_backend_through_two_front_ends(tmp_path):
         assert person.config.issuer is not None and person.config.watchdog is None
     finally:
         service.cp.close()
+def test_a_missing_guide_leaves_the_guide_out_and_the_gateway_up(tmp_path, caplog):
+    base = {"upstream": {"url": "http://127.0.0.1:1/mcp"}}
+    (tmp_path / "config.json").write_text(json.dumps({"backends": {"a": {**base, "guide_file": "missing.md"}},
+                                                      "gateways": {"g": {"service": "g.json", "backends": ["a"]}}}))
+    ferry = read(tmp_path / "config.json")
+    assert ferry.backends[0].guide is None and "guide_file cannot be read" in caplog.text

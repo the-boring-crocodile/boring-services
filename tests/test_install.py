@@ -349,7 +349,25 @@ def test_fishmarket_needs_its_config_json_and_the_edge_network(host, monkeypatch
     assert code == 0, out
     compose = (home / "compose.yaml").read_text()
     assert "name: edge_default" in compose and "\"--unsafe-url-auth\"" not in compose
+    assert "ports:" not in compose  # the edge reaches it on its network; no host port by default
     assert (home / "state").stat().st_mode & 0o777 == 0o700
+
+
+def test_fishmarket_loopback_port_for_a_proxy_on_the_host(host, monkeypatch):
+    """--loopback-port: the first deploy behind a proxy on the host passes without
+    editing compose.yaml (real-domain fresh install, 2026-11-01)."""
+    directory = release(host, "fishmarket")
+    steps = load(directory, host, monkeypatch)
+    home = host / "boring-fishmarket"
+    config = host / "fish-config"
+    config.mkdir()
+    (config / "config.json").write_text('{"url": "https://pond.example/fishmarket/mcp"}')
+    code, out = deploy(directory, steps, str(home), "--install", "--config-dir", str(config),
+                       "--edge-network", "fishmarket-net", "--loopback-port")
+    assert code == 0, out
+    assert "published on the host's loopback: 127.0.0.1:18518" in out
+    compose = (home / "compose.yaml").read_text()
+    assert '    ports: ["127.0.0.1:18518:8000"]\n' in compose and "@" not in compose.split("services:")[1]
 
 
 def test_sourcecache_serves_its_index_from_snapshots_and_uninstall_keeps_it(host, monkeypatch):

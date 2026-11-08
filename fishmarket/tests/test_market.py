@@ -100,6 +100,12 @@ FISH_WRITER={"create_transfer","open_download","grant_collector","revoke_transfe
 FISH_READER={"transfer_status","list_transfers","list_ready","collection_receipt","acknowledge"}
 
 
+def test_published_tool_list_budget(market):
+    app, *_ = market
+    tools = [t.model_dump(by_alias=True, exclude_none=True) for t in asyncio.run(app.server.list_tools())]
+    assert len(json.dumps(tools, ensure_ascii=False, separators=(",", ":"))) <= 7_016  # 4,516 + 2,500
+
+
 def test_reader_matrix_refuses_every_writer_tool_without_effect(market):
     async def run():
         app,store,key,other,reader=market

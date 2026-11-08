@@ -63,6 +63,11 @@ and every service on the same domain.
 
 ### Before the first install
 
+**Architecture.** The Linux release archives target x86_64. They include the
+locked wheels used to build their container images. Allow disk space for the
+new and previous image plus the service's persistent data; there is no single
+RAM or disk minimum for all services.
+
 **Docker** Engine with the Compose v2 plugin, 2.24 or later (Debian and
 Ubuntu: the packages `docker.io` and `docker-compose-v2`).
 
@@ -79,7 +84,7 @@ deploy's smoke checks that the MCP URL answers 401 naming it.
 | | `/services/canvas/mcp` and its metadata | `127.0.0.1:18511` |
 | Knowledge | `/services/knowledge/mcp` and its metadata | `127.0.0.1:18512` |
 | Sourcecache | `/services/sourcecache-d365/mcp` and its metadata | `127.0.0.1:18513` |
-| Fishmarket | `/fishmarket/*` and `/.well-known/oauth-protected-resource/fishmarket/mcp` | `fishmarket:8000` on the proxy's Docker network (no host port; with a proxy on the host instead: `docker network create fishmarket-net`, use that as `N` in the block; its first deploy then stops at the smoke check (502: nothing reaches it yet), as expected; add `ports: ["127.0.0.1:18518:8000"]` under the service in `/opt/boring-fishmarket/compose.yaml`, route to `127.0.0.1:18518` and run its `deploy` again) |
+| Fishmarket | `/fishmarket/*` and `/.well-known/oauth-protected-resource/fishmarket/mcp` | `fishmarket:8000` on the proxy's Docker network (no host port; with a proxy on the host instead: `docker network create fishmarket-net`, use that as `N` in the block, add `--loopback-port` to its first install and route to `127.0.0.1:18518`; an install made without it: add `ports: ["127.0.0.1:18518:8000"]` under the service in `/opt/boring-fishmarket/compose.yaml` and run its `deploy` again) |
 | MCP Ferry | `/services/NAME/mcp` and its metadata, per backend | `127.0.0.1:18520` to `18529`, one port per backend |
 
 For Canvas, in Caddy (the same pattern for every row of the table), inside the site block that already holds the
@@ -143,7 +148,9 @@ block writes that straight into a file only root can read, never into a chat
 or a log (the redirection runs inside the root shell; with a plain
 `sudo ... > file` your own shell would open the file), then moves the secret
 into `credentials/mcp-client-secret` (mode 0600), puts the client id into
-`config.json` and deletes the printout. `service-add` takes effect at once:
+`config.json` and deletes the printout. `set -C` refuses an existing capture file, preserving a once-only secret if
+that step is accidentally repeated. Keep the file until the remaining lines
+have moved its secret successfully. `service-add` takes effect at once:
 the running Crocodile accepts the service's registration from then on, and
 the Ponds see it after its first deploy has registered it. The `"bind":
 "0.0.0.0"` in each config is inside the container; Docker publishes the port
@@ -155,7 +162,11 @@ Ponds into `--ponds` and the `access` list (after
 the service's `HOME/config/config.json`.
 
 **If a block stops.** Before `service-add`, fix the cause and paste it
-again. After it, the service is registered (pasting the whole block again
+again. If `service-add` itself fails, inspect `service-list` and the private
+capture before retrying: shell redirection may have created an empty file
+even though the command failed. Remove an empty failed capture only after
+confirming what was registered; preserve any file containing the once-only
+secret. After it, the service is registered (pasting the whole block again
 stops at `service-add`: "exists"), and until the next line has run, its
 one-time printout, secret included, is in `/root/SERVICE-config/service-add.txt`
 (root's only). Then either run the remaining lines from the one that failed
@@ -166,7 +177,7 @@ removes it, with RECORD that entry's JSON.
 
 #### Canvas
 
-    V=0.2.19 S=canvas D=crocodile-url.example.test
+    V=0.2.20 S=canvas D=crocodile-url.example.test
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -182,7 +193,7 @@ removes it, with RECORD that entry's JSON.
      "access": [{"subject": "pond", "role": "writer", "author": "pond"},
                 {"subject": "garden", "role": "writer", "author": "garden"}]}
     EOF
-    sudo sh -c "umask 077 && boring-crocodile-admin service-add $S --url https://$D/services/$S/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
+    sudo sh -c "set -C; umask 077 && boring-crocodile-admin service-add $S --url https://$D/services/$S/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
     sudo python3 - /root/$S-config credentials/mcp-client-secret <<'PY' &&
     import json, os, pathlib, sys          # the secret into its file, the client id into the JSON files
     d, secret = pathlib.Path(sys.argv[1]), sys.argv[2]; os.umask(0o077); added = json.loads((d / "service-add.txt").read_text())
@@ -198,7 +209,7 @@ elsewhere than 127.0.0.1.
 
 #### Knowledge
 
-    V=0.2.15 S=knowledge D=crocodile-url.example.test
+    V=0.2.16 S=knowledge D=crocodile-url.example.test
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -214,7 +225,7 @@ elsewhere than 127.0.0.1.
      "access": [{"subject": "pond", "role": "writer", "author": "pond"},
                 {"subject": "garden", "role": "reader", "author": "garden"}]}
     EOF
-    sudo sh -c "umask 077 && boring-crocodile-admin service-add $S --url https://$D/services/$S/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
+    sudo sh -c "set -C; umask 077 && boring-crocodile-admin service-add $S --url https://$D/services/$S/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
     sudo python3 - /root/$S-config credentials/mcp-client-secret <<'PY' &&
     import json, os, pathlib, sys          # the secret into its file, the client id into the JSON files
     d, secret = pathlib.Path(sys.argv[1]), sys.argv[2]; os.umask(0o077); added = json.loads((d / "service-add.txt").read_text())
@@ -229,7 +240,7 @@ elsewhere than 127.0.0.1.
 It serves a snapshot you built first ([Building a snapshot](sourcecache-d365/README.md#building-a-snapshot));
 `I` below is that file.
 
-    V=0.1.18 S=sourcecache-d365 D=crocodile-url.example.test I=/root/snapshot.db
+    V=0.1.19 S=sourcecache-d365 D=crocodile-url.example.test I=/root/snapshot.db
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -245,7 +256,7 @@ It serves a snapshot you built first ([Building a snapshot](sourcecache-d365/REA
      "access": [{"subject": "pond", "role": "reader"},
                 {"subject": "garden", "role": "reader"}]}
     EOF
-    sudo sh -c "umask 077 && boring-crocodile-admin service-add $S --url https://$D/services/$S/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
+    sudo sh -c "set -C; umask 077 && boring-crocodile-admin service-add $S --url https://$D/services/$S/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
     sudo python3 - /root/$S-config credentials/mcp-client-secret <<'PY' &&
     import json, os, pathlib, sys          # the secret into its file, the client id into the JSON files
     d, secret = pathlib.Path(sys.argv[1]), sys.argv[2]; os.umask(0o077); added = json.loads((d / "service-add.txt").read_text())
@@ -260,7 +271,7 @@ It serves a snapshot you built first ([Building a snapshot](sourcecache-d365/REA
 It has no host port: it joins the Docker network your proxy runs on (`N`
 below, which must exist) and the proxy reaches it as `fishmarket:8000`.
 
-    V=0.1.14 S=fishmarket D=crocodile-url.example.test N=edge
+    V=0.1.15 S=fishmarket D=crocodile-url.example.test N=edge
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -276,7 +287,7 @@ below, which must exist) and the proxy reaches it as `fishmarket:8000`.
      "access": [{"subject": "pond", "role": "writer", "author": "pond"},
                 {"subject": "garden", "role": "writer", "author": "garden"}]}
     EOF
-    sudo sh -c "umask 077 && boring-crocodile-admin service-add $S --url https://$D/fishmarket/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
+    sudo sh -c "set -C; umask 077 && boring-crocodile-admin service-add $S --url https://$D/fishmarket/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
     sudo python3 - /root/$S-config credentials/mcp-client-secret <<'PY' &&
     import json, os, pathlib, sys          # the secret into its file, the client id into the JSON files
     d, secret = pathlib.Path(sys.argv[1]), sys.argv[2]; os.umask(0o077); added = json.loads((d / "service-add.txt").read_text())
@@ -303,7 +314,7 @@ ferry runs and the service answers `unavailable` to the Ponds; on the host,
 `sudo docker compose logs ferry` in `/opt/boring-mcp-ferry` shows the
 Crocodile's pings answered 503, and 200 once the backend runs.
 
-    V=0.1.4 S=mcp-ferry D=crocodile-url.example.test B=homeassistant
+    V=0.1.5 S=mcp-ferry D=crocodile-url.example.test B=homeassistant
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -323,7 +334,7 @@ Crocodile's pings answered 503, and 200 once the backend runs.
      "access": [{"subject": "pond", "role": "reader"}, {"subject": "garden", "role": "reader"}]}
     EOF
     sudo sh -c "umask 077 && echo http://$B:8086/YOUR-SECRET-PATH > /root/$S-config/credentials/$B-url" &&
-    sudo sh -c "umask 077 && boring-crocodile-admin service-add $B --url https://$D/services/$B/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
+    sudo sh -c "set -C; umask 077 && boring-crocodile-admin service-add $B --url https://$D/services/$B/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
     sudo python3 - /root/$S-config credentials/$B-client-secret <<'PY' &&
     import json, os, pathlib, sys          # the secret into its file, the client id into the JSON files
     d, secret = pathlib.Path(sys.argv[1]), sys.argv[2]; os.umask(0o077); added = json.loads((d / "service-add.txt").read_text())
@@ -339,7 +350,7 @@ Crocodile's pings answered 503, and 200 once the backend runs.
 |---|---|
 | all | `--config-dir DIR`: the service's configuration (`config.json`), the files it names and `credentials/` (the secrets) |
 | Canvas | `--public-url https://DOMAIN`, `--web-bind ADDRESS` (default 127.0.0.1), `--unsafe-url-auth` |
-| Fishmarket | `--edge-network NAME` (the Docker network the reverse proxy uses), `--unsafe-url-auth` |
+| Fishmarket | `--edge-network NAME` (the Docker network the reverse proxy uses), `--loopback-port` (also on the host's `127.0.0.1:18518`, for a reverse proxy on the host), `--unsafe-url-auth` |
 | MCP Ferry | none beyond `--config-dir` (`config.json`, `services/`, `credentials/`); backends are blocks in its `compose.yaml` ([mcp-ferry/README](mcp-ferry/README.md)) |
 | Sourcecache | `--index FILE` (a built snapshot) |
 
@@ -368,7 +379,7 @@ put in the one you update to.
 
 Canvas:
 
-    V=0.2.19 S=canvas
+    V=0.2.20 S=canvas
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -380,7 +391,7 @@ Canvas:
 
 Knowledge:
 
-    V=0.2.15 S=knowledge
+    V=0.2.16 S=knowledge
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -392,7 +403,7 @@ Knowledge:
 
 Sourcecache:
 
-    V=0.1.18 S=sourcecache-d365
+    V=0.1.19 S=sourcecache-d365
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -404,7 +415,7 @@ Sourcecache:
 
 Fishmarket:
 
-    V=0.1.14 S=fishmarket
+    V=0.1.15 S=fishmarket
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -416,7 +427,7 @@ Fishmarket:
 
 MCP Ferry:
 
-    V=0.1.4 S=mcp-ferry
+    V=0.1.5 S=mcp-ferry
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&

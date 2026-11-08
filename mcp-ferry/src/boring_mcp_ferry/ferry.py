@@ -72,6 +72,8 @@ log = logging.getLogger("boring_mcp_ferry")
 HEALTH_SECONDS = 2.0           # one reachability check of a backend, within one ping
 TOOLS_FRESH_SECONDS = 60.0     # the backend's tool list is fetched again after this (one fetch at a time)
 FETCH_CAP_SECONDS = 30.0       # one tool-list fetch at most, when no call time bounds it
+HTTP_TIMEOUT_SECONDS = 30.0
+_CALL_READ_TIMEOUT: ContextVar[float | None] = ContextVar("boring_mcp_ferry_call_read_timeout")
 
 # When the HTTP request reached the front end: the one deadline of a call counts from here, so
 # everything the SDK does for the request before call_tool (a tools/list, below) is inside it.
@@ -114,13 +116,24 @@ def _cause(error: BaseException) -> BaseException:
     return error
 
 
+def _call_timeout(name: str, seconds: float) -> Failed:
+    return Failed("timeout", f"{name}'s backend did not answer within {seconds:g} s; "
+                  "the call may have run", effects="unknown")
+
+
+async def _set_read_timeout(request: httpx2.Request) -> None:
+    # The SDK shares this client across front ends. Set the read cap on each HTTP request.
+    request.extensions["timeout"]["read"] = _CALL_READ_TIMEOUT.get(HTTP_TIMEOUT_SECONDS)
+
+
 class Upstream:
     """One backend as an MCP client sees it: a short connection per request."""
 
     def __init__(self, backend: Backend) -> None:
         self.backend = backend
         self.http = httpx2.AsyncClient(headers=backend.headers, trust_env=False,
-                                       timeout=httpx2.Timeout(30.0))
+                                       timeout=httpx2.Timeout(HTTP_TIMEOUT_SECONDS, connect=10.0),
+                                       event_hooks={"request": [_set_read_timeout]})
         self._health: tuple[float, bool] = (-1e9, False)
         self._health_lock = asyncio.Lock()
         self.instructions: str | None = None
@@ -156,6 +169,8 @@ class Upstream:
                 raise Failed("backend_error", f"{name}'s backend answered with a protocol error: "
                              f"{self.redact(cause.message)}",
                              backend_code=cause.code, effects="unknown") from None
+            if isinstance(cause, httpx2.ReadTimeout) and (seconds := _CALL_READ_TIMEOUT.get(None)) is not None:
+                raise _call_timeout(name, seconds) from None
             if isinstance(cause, httpx2.TransportError):
                 raise Failed("connection", f"the connection to {name}'s backend failed "
                              f"({type(cause).__name__}); the call may have run", effects="unknown") from None
@@ -185,12 +200,16 @@ class Upstream:
         result: list[Tool] = await self._request(listing)
         return result
 
-    async def call(self, name: str, arguments: dict[str, Any]) -> CallToolResult:
+    async def call(self, name: str, arguments: dict[str, Any], read_timeout: float | None) -> CallToolResult:
         async def calling(client: Client) -> CallToolResult:
             result: CallToolResult = await client.call_tool(name, arguments)
             return result
-        result: CallToolResult = await self._request(calling)
-        return result
+        setting = _CALL_READ_TIMEOUT.set(read_timeout)
+        try:
+            result: CallToolResult = await self._request(calling)
+            return result
+        finally:
+            _CALL_READ_TIMEOUT.reset(setting)
 
     async def healthy(self) -> bool:
         """Whether the backend answers a connection, checked at most once per ping interval."""
@@ -284,8 +303,7 @@ class Carried:
         answered, result = await _bounded(asyncio.ensure_future(work), left, cancel=not shared)
         if answered:
             return result
-        raise Failed("timeout", f"{self.backend.name}'s backend did not answer within {self.timeout:g} s; "
-                     "the call may have run", effects="unknown")
+        raise _call_timeout(self.backend.name, self.timeout)
 
     async def offered(self, name: str, deadline: float | None) -> Tool:
         """The tool, from a tool list at most TOOLS_FRESH_SECONDS old (an unknown name does not
@@ -307,7 +325,7 @@ class Carried:
             raise Refused("forbidden", f"{self.backend.name}.{name} changes something (not marked read-only): "
                           "use service_call")
         require("reader" if read_only else "writer")
-        result: CallToolResult = await self.within(self.upstream.call(name, arguments), deadline)
+        result: CallToolResult = await self.within(self.upstream.call(name, arguments, self.timeout), deadline)
         return result
 
 
@@ -355,27 +373,28 @@ GATEWAY_INSTRUCTIONS = (
     "how to use them; service_read runs a tool the service marks read-only, service_call any tool. Answers, "
     "refusals and status=running pass through unchanged: collect long runs with the service's own *_wait tool."
 )
-_SERVICE = {"type": "string", "description": "a name from service_list"}
+_SERVICE = {"type": "string", "description": "Service name from service_list."}
+_TOOL = {"type": "string", "description": "Tool name from service_describe."}
+_TOOL_ARGUMENTS = {"type": "object", "description": "Use the tool's input schema from service_describe. Omit when it needs no arguments."}
 GATEWAY_TOOLS = [
-    Tool(name="service_list", description="The services behind this gateway, and whether each answers now.",
+    Tool(name="service_list", description="Read the services and whether they answer. Use service_describe to see a service's tools.",
          input_schema={"type": "object", "properties": {}, "additionalProperties": False},
          annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False)),
     Tool(name="service_describe",
-         description="A service's tools (name, description, input schema, read_only) and its guidance.",
+         description="Read a service's tool schemas and guidance. Use service_read for read-only tools or service_call for other tools.",
          input_schema={"type": "object", "properties": {"service": _SERVICE}, "required": ["service"],
                        "additionalProperties": False},
          annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False)),
     Tool(name="service_read",
-         description="Run a tool the service marks read-only: {service, tool, arguments}. Its answer as it is.",
-         input_schema={"type": "object", "properties": {"service": _SERVICE, "tool": {"type": "string"},
-                                                        "arguments": {"type": "object"}},
+         description="Run a read-only service tool. If the result is running, follow the service tool's instructions to collect it.",
+         input_schema={"type": "object", "properties": {"service": _SERVICE, "tool": _TOOL,
+                                                        "arguments": _TOOL_ARGUMENTS},
                        "required": ["service", "tool"], "additionalProperties": False},
          annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True)),
     Tool(name="service_call",
-         description="Run any tool of a service: {service, tool, arguments}. Its answer as it is; it may change "
-                     "real data.",
-         input_schema={"type": "object", "properties": {"service": _SERVICE, "tool": {"type": "string"},
-                                                        "arguments": {"type": "object"}},
+         description="Run a service tool that may change data. If the result is running, follow the service tool's instructions to collect it.",
+         input_schema={"type": "object", "properties": {"service": _SERVICE, "tool": _TOOL,
+                                                        "arguments": _TOOL_ARGUMENTS},
                        "required": ["service", "tool"], "additionalProperties": False},
          annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=True)),
 ]

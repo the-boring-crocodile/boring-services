@@ -4,6 +4,7 @@
 # @UID@:@GID@ are the service account's, as the OS assigned them. No host
 # port: the edge (Caddy) reaches it on its network (--edge-network) at
 # fishmarket:8000; README.md, "Before the first install", lists the routes.
+# With --loopback-port also on 127.0.0.1:18518, for a reverse proxy on the host.
 
 services:
   fishmarket:
@@ -25,6 +26,7 @@ services:
       # Runtime state: temporary transfers; exclude it from backups.
       - ./state:/stack/state
     networks: [edge]
+    ports: ["127.0.0.1:18518:8000"]  # @LOOPBACK_PORT@
     restart: unless-stopped
     init: true
     stop_grace_period: 20s

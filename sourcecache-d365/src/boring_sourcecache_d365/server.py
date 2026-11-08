@@ -21,9 +21,10 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from mcp.server.mcpserver import MCPServer
+from pydantic import Field
 
 from . import __version__, sourcecache
 from boring_service_kit.calllog import CallLog
@@ -77,29 +78,80 @@ def create_server(index_paths: list[str], state_dir: Path | None = None, log_cal
     def register(fn: Any) -> None:
         mcp.tool(annotations=READ_ONLY)(as_mcp_tool(permitted(fn, "reader") if enforce_access else fn, log))
 
-    def source_info(index: str | None = None) -> dict[str, Any]:
-        """Indexes available; with `index`: its versions, counts and models (layer, publisher)."""
+    def source_info(
+        index: Annotated[str | None, Field(
+            description="Index name from this tool's listing. Omit to list indexes.",
+        )] = None,
+    ) -> dict[str, Any]:
+        """Read available source indexes. Give an index name to see its D365 version, counts and models."""
         if index is None:
             return {"indexes": [{**i.stamp(), "files": i.meta.get("files"), "labels": i.meta.get("labels"),
                                  "warm": i.warm, "default": name == default} for name, i in indexes.items()]}
         return pick(index).info()
 
-    def source_search(query: str, package: str | None = None, model: str | None = None,
-                      element_type: str | None = None, scope: str = "all", limit: int = sourcecache.SEARCH_DEFAULT,
-                      offset: int = 0, index: str | None = None) -> dict[str, Any]:
-        """Find text (3+ chars, case-insensitive) in all files; exact lines. scope: all|standard|custom. Microsoft publishers are standard; unknown model/publisher provenance appears only in all, with scope=unknown."""
+    def source_search(
+        query: Annotated[str, Field(description="Case-insensitive text of at least 3 characters.")],
+        package: Annotated[str | None, Field(description="Exact package name, ignoring case.")] = None,
+        model: Annotated[str | None, Field(description="Exact model name, ignoring case.")] = None,
+        element_type: Annotated[str | None, Field(
+            description="Indexed folder type, such as AxClass, AxTable, AxForm or AxDataEntityView.",
+        )] = None,
+        scope: Annotated[str, Field(
+            description=(
+                "standard for Microsoft, custom for other known publishers, all also includes "
+                "unknown publishers."
+            ),
+            json_schema_extra={"enum": sourcecache.SCOPES},
+        )] = "all",
+        limit: Annotated[int, Field(
+            description="Maximum matching files.",
+            json_schema_extra={"minimum": 1, "maximum": sourcecache.SEARCH_MAX},
+        )] = sourcecache.SEARCH_DEFAULT,
+        offset: Annotated[int, Field(description="Matching files to skip.", json_schema_extra={"minimum": 0})] = 0,
+        index: Annotated[str | None, Field(description="Index name from source_info. Omit to use the default.")] = None,
+    ) -> dict[str, Any]:
+        ("Find text in indexed source. Read a match with source_element. If truncated, add the number of "
+         "results to offset or narrow the filters.")
         return pick(index).search(query, package, model, element_type, scope, limit, offset)
 
-    def source_element(element_type: str, name: str, package: str | None = None, model: str | None = None,
-                       start_line: int = 1, line_count: int = sourcecache.ELEMENT_LINES_DEFAULT,
-                       index: str | None = None) -> dict[str, Any]:
-        """Indexed file text by type/name; candidates if ambiguous. XML-file line numbers, not method-relative. Follow next_line; line_cut marks an oversized partial line."""
+    def source_element(
+        element_type: Annotated[str, Field(
+            description="Indexed folder type, such as AxClass, AxTable, AxForm or AxDataEntityView.",
+        )],
+        name: Annotated[str, Field(description="Element name from source_search.")],
+        package: Annotated[str | None, Field(description="Package name to disambiguate the element.")] = None,
+        model: Annotated[str | None, Field(description="Model name to disambiguate the element.")] = None,
+        start_line: Annotated[int, Field(
+            description="First indexed-file line, including XML markup.",
+            json_schema_extra={"minimum": 1},
+        )] = 1,
+        line_count: Annotated[int, Field(
+            description="Maximum indexed-file lines.",
+            json_schema_extra={"minimum": 1, "maximum": sourcecache.ELEMENT_LINES_MAX},
+        )] = sourcecache.ELEMENT_LINES_DEFAULT,
+        index: Annotated[str | None, Field(description="Index name from source_info. Omit to use the default.")] = None,
+    ) -> dict[str, Any]:
+        ("Read an indexed file by type and name. Use returned package/model to resolve candidates. Continue "
+         "at next_line. A line_cut means part of one line was omitted.")
         return pick(index).element(element_type, name, package, model, start_line, line_count)
 
-    def label_lookup(text: str | None = None, label_id: str | None = None, locale: str | None = None,
-                     references: bool = False, limit: int = sourcecache.LABELS_DEFAULT,
-                     index: str | None = None) -> dict[str, Any]:
-        """Labels by text, or by ID (@SYS1, @File:Id) with references=true for every exact use in code."""
+    def label_lookup(
+        text: Annotated[str | None, Field(description="Text to find in labels.")] = None,
+        label_id: Annotated[str | None, Field(
+            description="Label ID such as @SYS1 or @File:Id. The leading @ is optional.",
+        )] = None,
+        locale: Annotated[str | None, Field(
+            description="Label locale such as en-US or de. Omit to search available locales.",
+        )] = None,
+        references: Annotated[bool, Field(description="With label_id only. Include exact code references.")] = False,
+        limit: Annotated[int, Field(
+            description="Maximum matching labels or references.",
+            json_schema_extra={"minimum": 1, "maximum": sourcecache.LABELS_MAX},
+        )] = sourcecache.LABELS_DEFAULT,
+        index: Annotated[str | None, Field(description="Index name from source_info. Omit to use the default.")] = None,
+    ) -> dict[str, Any]:
+        ("Read labels by text or ID. Supply exactly one. Use the returned ID with references=true to find its "
+         "uses in code.")
         return pick(index).labels(text, label_id, locale, references, limit)
 
     for fn in (source_info, source_search, source_element, label_lookup):

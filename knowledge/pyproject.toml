@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boring-knowledge"
-version = "0.2.15"
+version = "0.2.16"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "COPYING.md"]
 description = "A notebook the agents keep for each other: small entries, full-text search, every version with its author"

@@ -56,18 +56,11 @@ def _every_address(bind: str) -> bool:
 
 def _service(path: Any, where: str) -> ServiceConfig:
     """A front end's ServiceConfig: whatever the kit accepts (the Crocodile's tokens, its own sign-in,
-    access keys), except its own sign-in with Pond registration."""
+    access keys; the kit refuses its own sign-in with Pond registration), bound to the ferry's own address."""
     try:
         config = ServiceConfig(path)
     except (OSError, ValueError) as error:
         raise ConfigError(f"{where}: {error}") from None
-    # A Pond reaches services only with the Crocodile's tokens: a front end that signs people in
-    # itself would register and then refuse every call from the Pond. (The kit should own this
-    # rule for every service; boring-pond-common TODO.)
-    if config.issuer is not None and config.watchdog is not None:
-        raise ConfigError(f"{where}: `issuer` and `pond` exclude each other: a Pond calls only with the "
-                          "Crocodile's tokens (`oauth`); a front end with its own sign-in serves a person's "
-                          "client directly")
     if _every_address(config.bind):
         raise ConfigError(f"{where}: bind the ferry's own address on its default network (172.16.46.2 in the "
                           "template), or loopback, not every address: the backends share the ferry's other "

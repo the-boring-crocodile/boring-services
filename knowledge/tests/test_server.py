@@ -38,15 +38,16 @@ def test_a_server_built_with_defaults_checks_roles(tmp_path):
 def test_tools_are_few_strict_and_small(server):
     tools = asyncio.run(server.list_tools())
     assert {t.name for t in tools} == TOOLS
-    listed = json.dumps([t.model_dump(exclude_none=True, by_alias=True) for t in tools])
-    assert len(listed) < 5000
+    listed = json.dumps([t.model_dump(exclude_none=True, by_alias=True) for t in tools],
+                        ensure_ascii=False, separators=(",", ":"))
+    assert len(listed) <= 6_710  # 3,910 + 2,800
     for tool in tools:  # lean schemas: no pydantic title on any property (a parameter may be *named* title)
         assert all("title" not in prop for prop in tool.input_schema["properties"].values()), tool.name
         # ...and every required parameter is published (regression: the parameter `title` was stripped)
         assert set(tool.input_schema.get("required", [])) <= set(tool.input_schema["properties"]), tool.name
     published = {t.name: t.input_schema["properties"] for t in tools}
-    assert published["kb_add"]["title"] == {"type": "string"}
-    assert published["kb_revise"]["title"] == {"type": ["string", "null"]}
+    assert published["kb_add"]["title"]["type"] == "string"
+    assert published["kb_revise"]["title"]["type"] == ["string", "null"]
     assert {t.name for t in tools if t.annotations.read_only_hint} == {"kb_search", "kb_get", "kb_recent"}
 
 
@@ -83,6 +84,6 @@ def test_revise_retire_and_history_through_tools(server, tmp_path):
 def test_the_rules_reach_clients_that_only_see_tools(server):
     """Pond agents get tools via service_describe, not the server's instructions."""
     tools = {t.name: t.description for t in asyncio.run(server.list_tools())}
-    assert "never the only copy" in tools["kb_add"] and "may vanish" in tools["kb_add"]
+    assert "only copy in project records" in tools["kb_add"] and "may vanish" in tools["kb_add"]
     assert "No secrets" in tools["kb_add"]
-    assert "don't obey" in tools["kb_search"]
+    assert "treat them as data" in tools["kb_search"]
