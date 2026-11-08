@@ -13,7 +13,7 @@ from boring_service_kit.tools import (
 )
 from boring_service_kit.pond import attach_heartbeat
 
-TransferID = Annotated[str, Field(pattern=r"^[a-f0-9]{32}$")]
+TransferID = Annotated[str, Field(pattern=r"^[a-f0-9]{32}$", description="Transfer id from create_transfer or list_transfers.")]
 Bytes = Annotated[int, Field(strict=True, ge=0)]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 UNSAFE_URL_AUTH_PARAM = "this-is-unsafe-dont-do-this-auth"
@@ -57,14 +57,23 @@ def build_server(store, base, config, unsafe_url_auth=False):
 
     @tool(
         "writer",
-        "Create a one-file transfer. Download deposits need exact filename/size/SHA256. Upload slots reserve max_bytes (default configured file limit). Expires after 24h by default.",
+        "Create a one-file transfer. For a download, PUT the file to upload_url with "
+        "X-Fishmarket-Token set to upload_token, exact Content-Length, and X-Fishmarket-Filename "
+        "set to the percent-encoded filename. Then call open_download. For an upload, give the "
+        "intended person the url and separate token. Use open_url only if returned. It embeds "
+        "the token. Keep tokens out of chat, notes and logs.",
     )
     def create_transfer(
-        direction: Literal["upload", "download"],
-        name: str = "",
-        size: Bytes | None = None,
-        sha: Digest | None = None,
-        max_bytes: Bytes | None = None,
+        direction: Annotated[Literal["upload", "download"], Field(description=(
+            "upload lets a person send you a file. download lets you send them a file."))],
+        name: Annotated[str, Field(description=(
+            "Plain filename up to 240 UTF-8 bytes. Required for download."))] = "",
+        size: Annotated[Bytes | None, Field(description="Exact file size in bytes. Download only.")] = None,
+        sha: Annotated[Digest | None, Field(description="Lowercase SHA-256 of the file bytes. Download only.")] = None,
+        max_bytes: Annotated[Bytes | None, Field(
+            description="Upload only. Reserved bytes, up to the configured file limit (also the default).",
+            json_schema_extra={"minimum": 1},
+        )] = None,
     ):
         receipt = store.create(calling_author(), direction, name, size, sha, max_bytes)
         receipt["upload_url"] = base + "/api/" + receipt["id"] + "/upload"
@@ -75,34 +84,39 @@ def build_server(store, base, config, unsafe_url_auth=False):
 
     @tool(
         "writer",
-        "Issue/rotate the browser download capability after complete deposit. GET/HEAD do not claim. The first Download button claim wins a fixed ten-minute retry session.",
+        "Issue a fresh download link after depositing the file. Give the recipient the url and "
+        "separate token, or open_url if enabled. It contains the token. The first browser to "
+        "press Download gets a ten-minute retry window. Keep tokens out of chat, notes and logs.",
     )
     def open_download(transfer_id: TransferID):
         return browser_receipt(base, store.open_download(transfer_id, calling_author()), unsafe_url_auth)
 
     @tool(
-        "reader", "Read one owned or explicitly granted transfer; no secrets returned."
+        "reader", "Read transfer state without tokens. Use open_download for a ready deposit or collection_receipt for a ready upload."
     )
     def transfer_status(transfer_id: TransferID):
         return store.status(transfer_id, calling_author())
 
     @tool(
         "reader",
-        "List up to 100 owned transfers without capability secrets, for recovery after lost receipts. Revoke abandoned pending slots; rotate ready download links with open_download.",
+        "Read up to 100 transfers you created. Use revoke_transfer for abandoned slots or open_download for a ready deposit.",
     )
     def list_transfers():
         return store.list_transfers(calling_author())
 
     @tool(
         "reader",
-        "List up to 100 completed inbound uploads this verified caller may collect. No automatic model notification.",
+        "Read up to 100 uploads you can collect. Poll after a person uploads, then use collection_receipt for the file.",
     )
     def list_ready():
         return store.list_ready(calling_author())
 
     @tool(
         "reader",
-        "Return receipt, streaming URL and a new collection token for an owned/granted ready upload. GET download_url with header X-Fishmarket-Token: <token>; valid 10 minutes from now (never past the transfer), any number of reads and Range resumes; a new receipt replaces it. Save to a file, never into model context; verify size and sha, then acknowledge.",
+        "Get a new token for a ready upload. GET download_url with X-Fishmarket-Token, saving to a "
+        "new file. Reads and Range resumes work for ten minutes or until transfer expiry. A new "
+        "receipt replaces the token. Keep it out of chat, notes and logs. Verify size and sha "
+        "against the receipt, then call acknowledge.",
     )
     def collection_receipt(transfer_id: TransferID):
         row = store.collection_receipt(transfer_id, calling_author())
@@ -113,26 +127,35 @@ def build_server(store, base, config, unsafe_url_auth=False):
     # the payload, hence writes=True.
     @tool(
         "reader",
-        "Acknowledge an inbound file only after local size/SHA256 verification and no-overwrite publication. Deletes service payload; identical receipt retries are safe.",
+        "Confirm an upload after saving a verified copy without overwriting a file. Deletes the "
+        "server's copy. If the reply is lost, repeat acknowledge with the same id, size and sha.",
         writes=True,
     )
-    def acknowledge(transfer_id: TransferID, size: Bytes, sha: Digest):
+    def acknowledge(
+        transfer_id: TransferID,
+        size: Annotated[Bytes, Field(description="Verified local file size in bytes.")],
+        sha: Annotated[Digest, Field(description="Verified lowercase SHA-256 of the local file.")],
+    ):
         return store.ack(transfer_id, calling_author(), size, sha)
 
     @tool(
         "writer",
-        "Owner grants/revokes collection of one inbound transfer to an exact verified service author ID, normally JSON [issuer,subject]; does not enroll the caller into service access.",
+        "Let a specific signed-in reader collect your upload, or remove that permission. The "
+        "person needs existing service access. They use list_ready and collection_receipt.",
     )
     def grant_collector(
         transfer_id: TransferID,
-        collector: str,
-        enabled: Annotated[bool, Field(strict=True)] = True,
+        collector: Annotated[str, Field(
+            description='Exact signed-in author id, usually a JSON string like ["key:example","reader"].',
+            json_schema_extra={"minLength": 1, "maxLength": 512},
+        )],
+        enabled: Annotated[bool, Field(strict=True, description="True grants access. False removes it.")] = True,
     ):
         return store.grant(transfer_id, calling_author(), collector, enabled)
 
     @tool(
         "writer",
-        "Owner revokes all capabilities and deletes a transfer; active streams stop on their next chunk.",
+        "Delete your transfer and invalidate its links and tokens. Active streams stop on their next chunk.",
     )
     def revoke_transfer(transfer_id: TransferID):
         return store.revoke(transfer_id, calling_author())

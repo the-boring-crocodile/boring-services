@@ -36,6 +36,8 @@ Only `tools/list` and `tools/call`; that is all a Pond's worker asks for.
   other tool `writer`. The marks are the server's own hints: configure only
   servers whose marks you accept.
 - The server's answer, its own errors included, is passed on unchanged.
+- Backend tool reads use the configured call deadline, or have no read
+  timeout when neither the backend nor the front end sets a limit.
 - One deadline per call (the backend's `timeout_seconds`, at most the Pond's
   call time), counted from the request's arrival, covers checking the tool list
   and the call. Without a Pond there is no Pond's call time: only
@@ -182,7 +184,7 @@ below), on a host with Docker and Compose 2.24+ and the route above. Set
 get as its `MCP_SECRET_PATH` (the same value in both places), and copy the
 block; it stops at the first failure:
 
-    V=0.1.4 S=mcp-ferry H=tools-url.example.test B=homeassistant
+    V=0.1.5 S=mcp-ferry H=tools-url.example.test B=homeassistant
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&

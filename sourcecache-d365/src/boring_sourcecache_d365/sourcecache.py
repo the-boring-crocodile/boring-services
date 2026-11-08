@@ -47,6 +47,7 @@ _NOCASE = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxy
 IDENT = r"[A-Za-z_][A-Za-z0-9_]*"
 LABEL_REF = re.compile(rf"(?<![A-Za-z0-9_@])@{IDENT}(?::{IDENT})?(?![A-Za-z0-9_])")
 
+SCOPES = ("all", "standard", "custom")
 SEARCH_DEFAULT, SEARCH_MAX = 20, 100
 LINES_PER_FILE = 3
 LINE_CHARS = 240
@@ -525,7 +526,7 @@ class Index:
         elif scope == "custom":
             clauses.append("(m.publisher IS NOT NULL AND trim(m.publisher) != '' AND m.publisher NOT IN (?, ?))")
             params.extend(MICROSOFT)
-        elif scope != "all":
+        elif scope not in SCOPES:
             raise Refused("invalid_request", "scope must be all, standard or custom")
         return "".join(f" AND {c}" for c in clauses), params
 

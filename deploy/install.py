@@ -59,6 +59,10 @@ PUBLIC_URL = Setting("public-url", "the https://host[:port] your reverse proxy s
 WEB_BIND = Setting("web-bind", "the IP address its web port listens on", default="127.0.0.1",
                    pattern=r"[0-9a-fA-F.:]+")
 UNSAFE_URL_AUTH = Setting("unsafe-url-auth", "put the token into the links it gives out", flag=True)
+LOOPBACK_PORT = Setting("loopback-port", "also publish it on the host's loopback, 127.0.0.1:18518 "
+                        "(for a reverse proxy on the host)", flag=True)
+# A flag's template lines carry its marker: kept (marker comment removed) when it is on, dropped when off.
+FLAG_MARKERS = {"@UNSAFE_URL_AUTH@": "unsafe_url_auth", "@LOOPBACK_PORT@": "loopback_port"}
 EDGE_NETWORK = Setting("edge-network", "the docker network the edge (Caddy) reaches it on",
                        pattern=r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 INDEX = Setting("index", "the index file to serve (sourcecache build --db)", file=True)
@@ -74,7 +78,7 @@ class Spec:
 SPECS = {
     "boring-canvas": Spec([CONFIG, PUBLIC_URL, WEB_BIND, UNSAFE_URL_AUTH], admin="canvas-admin"),
     "boring-knowledge": Spec([CONFIG]),
-    "boring-fishmarket": Spec([CONFIG, EDGE_NETWORK, UNSAFE_URL_AUTH], state_mode=0o700),
+    "boring-fishmarket": Spec([CONFIG, EDGE_NETWORK, UNSAFE_URL_AUTH, LOOPBACK_PORT], state_mode=0o700),
     "boring-sourcecache-d365": Spec([CONFIG, INDEX]),
     "boring-mcp-ferry": Spec([CONFIG]),
 }
@@ -233,6 +237,8 @@ def plan(ctx, settings):
         lines.append(f"{ctx.home / 'snapshots'}: {Path(settings['index']).name} from {settings['index']}")
     if "edge_network" in settings:
         lines.append(f"the container joins the docker network {settings['edge_network']} (must exist)")
+    if settings.get("loopback_port"):
+        lines.append("its port is published on the host's loopback: 127.0.0.1:18518")
     if spec.admin:
         lines.append(f"{ADMIN_DIR / ('boring-' + spec.admin)} (root only)")
     shown = {k: v for k, v in settings.items() if k not in ("config_dir", "index")}
@@ -338,8 +344,9 @@ def _compose(ctx, settings, account):
         text = text.replace(key, value)
     lines = []
     for line in text.splitlines():
-        if "@UNSAFE_URL_AUTH@" in line:
-            if not settings.get("unsafe_url_auth"):
+        marker = next((m for m in FLAG_MARKERS if m in line), None)
+        if marker is not None:
+            if not settings.get(FLAG_MARKERS[marker]):
                 continue
             line = line.split("#", 1)[0].rstrip()
         lines.append(line)

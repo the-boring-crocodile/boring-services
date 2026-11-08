@@ -3,6 +3,41 @@
 Notable changes per release, newest first ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [SemVer](https://semver.org/); each service is tagged on its own, `SERVICE-vX.Y.Z`, e.g. `canvas-v0.2.19`).
 
+## 2026-11-08: MCP Ferry 0.1.5, Fishmarket 0.1.15, Knowledge 0.2.16, D365 Sourcecache 0.1.19, Canvas 0.2.20
+
+Every service is relocked on Pond Common 0.7.13 (`issuer` with `pond` refused by the kit; deploy
+step lines flushed).
+
+### MCP Ferry 0.1.5
+
+- Gateway tools explain how to discover, call and collect a service result.
+- MCP Ferry uses the effective call deadline for backend tool reads. Calls
+  without a configured deadline have no fixed read timeout.
+- A `guide_file` that cannot be read is left out with a warning: the gateway still starts (a
+  renamed handbook page kept it, and every backend behind it, down).
+- Built on Pond Common 0.7.13. Its own refusal of `issuer` with `pond` is gone: the kit refuses
+  the pair for every service now.
+- Reports its own version to backends again (it said 0.1.3 since 0.1.4).
+
+### Fishmarket 0.1.15
+
+- Tool descriptions explain how to deposit, share, collect and acknowledge a file.
+- First install: `--loopback-port` also publishes it on the host's `127.0.0.1:18518`, for a
+  reverse proxy on the host. Its first deploy then passes without editing `compose.yaml`
+  (without it, nothing changes: no host port, the edge reaches it on its Docker network).
+
+### Knowledge 0.2.16
+
+- Tool descriptions and schemas explain notebook search, paging, confidence and revisions.
+
+### D365 Sourcecache 0.1.19
+
+- Tool descriptions and schemas explain source filters, line ranges and how to continue reads.
+
+### Canvas 0.2.20
+
+- Relocked on Pond Common 0.7.13; no Canvas change (a test keeps its published tool list within budget).
+
 ## 2026-11-01: MCP Ferry 0.1.4
 
 ### MCP Ferry 0.1.4
@@ -39,6 +74,9 @@ Built on Pond Common 0.7.11, like the other services of 2026-10-30 (unchanged).
 
 Everything since 2026-10-22. All services build on Pond Common 0.7.11; own-issuer deployments
 accept public-client token revocation without a secret field.
+
+All services use Pond Common 0.7.12. Shared HTTP startup waits up to
+20 seconds for an occupied listener during a restart and logs the wait.
 
 ### Canvas 0.2.18
 

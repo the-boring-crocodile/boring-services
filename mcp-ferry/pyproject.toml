@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boring-mcp-ferry"
-version = "0.1.4"
+version = "0.1.5"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "COPYING.md"]
 description = "Carries MCP servers we did not write to a Pond, or straight to a person's client: a sign-in in front, the backend on a private network behind"

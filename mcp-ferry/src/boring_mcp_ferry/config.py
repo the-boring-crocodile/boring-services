@@ -28,7 +28,8 @@
 - `service` is optional when a gateway carries the backend: a backend has its
   own front end (`service`), sits behind one or more gateways, or both.
 - `guide_file`: optional text a gateway's `service_describe` returns with the
-  backend's tools (e.g. a kit page), read when the ferry starts.
+  backend's tools (e.g. a kit page), read when the ferry starts; one that
+  cannot be read is left out with a warning (the gateway still starts).
 
 `gateways` (optional): one front end each (`service`, a ServiceConfig file),
 offering four tools over the backends it names (`backends`): service_list,
@@ -40,6 +41,7 @@ refused, so a typo cannot silently drop a restriction.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -158,12 +160,16 @@ class Ferry:
         return [b for b in self.backends if b.service is not None] + list(self.gateways)
 
 
-def _guide(config: Path, name: str, value: Any) -> str:
+def _guide(config: Path, name: str, value: Any) -> str | None:
+    """The guide's text. A guide that cannot be read is left out with a warning: a renamed handbook page
+    must not keep the whole gateway, and every backend behind it, from starting."""
     where = f"backends.{name}.guide_file"
     try:
         text = _file(config, value, where).read_text(encoding="utf-8-sig")
     except OSError as error:
-        raise ConfigError(f"{where} cannot be read ({type(error).__name__})") from None
+        logging.getLogger(__name__).warning("%s cannot be read (%s); serving without a guide", where,
+                                            type(error).__name__)
+        return None
     if len(text) > GUIDE_CHARS:
         raise ConfigError(f"{where}: at most {GUIDE_CHARS} characters")
     return text

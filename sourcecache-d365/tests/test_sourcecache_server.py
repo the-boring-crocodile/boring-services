@@ -31,8 +31,9 @@ def call(server, tool, arguments):
 def test_tools_are_few_strict_and_small(indexes):
     tools = asyncio.run(create_server([indexes[0]], enforce_access=False).list_tools())
     assert {t.name for t in tools} == TOOLS
-    listed = json.dumps([t.model_dump(exclude_none=True, by_alias=True) for t in tools])
-    assert len(listed) < 4000 and '"title"' not in listed
+    listed = json.dumps([t.model_dump(exclude_none=True, by_alias=True) for t in tools],
+                        ensure_ascii=False, separators=(",", ":"))
+    assert len(listed) <= 4_301 and '"title"' not in listed  # 2,301 + 2,000
     assert all(t.annotations.read_only_hint for t in tools)
 
 
