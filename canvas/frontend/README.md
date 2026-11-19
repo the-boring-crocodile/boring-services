@@ -9,8 +9,12 @@ itself. braces 3.0.3 (build tooling, not bundled) has a withdrawn advisory and
 no newer version.
 Generated assets ship in the Python wheel. Browsers require
 no CDN or package-registry access. BUILD.json inventories their hashes;
-DEPENDENCIES.json records locked package provenance and which packages are
-bundled; licenses/ contains the installed package notices, and each font
+DEPENDENCIES.json records every full lock path, which packages are bundled,
+and its license_files paths. Notices use scoped package names and versions;
+identical nested copies share a file, while differing texts get a short hash
+suffix. Filenames stay within 100 and site-packages paths within 160 characters.
+Run `node --test license-files.test.mjs` for the naming/deduplication checks.
+licenses/ contains the installed package notices, and each font
 directory gets its LICENSE.txt. Notices that upstream does not ship are kept in
 [notices/](notices/README.md); the build stops when a bundled package or a font
 family has none.

@@ -18,9 +18,8 @@ def test_invalid_http_config_has_no_database_effects(tmp_path, existing, config_
         config = tmp_path / "config.json"
         config.write_text("{" if config_kind == "malformed" else json.dumps({
             "url": "http://127.0.0.1:18512/mcp",
-            "oauth": {"issuer": "https://issuer.example", "introspection_url": "https://issuer.example/introspect",
-                      "client_id": "fixture", "secret_file": "not-present"},
-            "access": []}))
+            "mode": "crocodile", "crocodile": {"url": "https://issuer.example",
+                      "client_id": "fixture", "secret_file": "not-present"}}))
         args += ["--config", str(config)]
     with pytest.raises((SystemExit, ValueError, OSError)):
         main(args)

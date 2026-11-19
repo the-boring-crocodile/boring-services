@@ -4,8 +4,11 @@ import { mkdir, readFile, writeFile, readdir, stat, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto';
 import { dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { licenseWriter } from './license-files.mjs';
 const root = dirname(fileURLToPath(import.meta.url));
 const out = resolve(root, '../src/boring_canvas/assets');
+const excalidraw = JSON.parse(await readFile(resolve(root, 'node_modules/@excalidraw/excalidraw/package.json'), 'utf8'));
+const esbuild = JSON.parse(await readFile(resolve(root, 'node_modules/esbuild/package.json'), 'utf8'));
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
 const result = await build({
@@ -56,7 +59,7 @@ for (const input of Object.keys(result.metafile.inputs)) {
 const lock = JSON.parse(await readFile(resolve(root, 'package-lock.json'), 'utf8'));
 const licenses = Object.entries(lock.packages).filter(([name]) => name).map(([name, item]) =>
   ({ package: name, version: item.version, license: item.license || 'see package notice',
-     bundled: bundled.has(name), integrity: item.integrity }));
+     bundled: bundled.has(name), integrity: item.integrity, license_files: [] }));
 // Notices for bundled packages that ship no licence file (notices/README.md).
 const noticeDir = resolve(root, 'notices');
 const extra = JSON.parse(await readFile(resolve(noticeDir, 'packages.json'), 'utf8'));
@@ -66,21 +69,31 @@ function extraNotice(name) {
   return key && extra[key];
 }
 await mkdir(resolve(out, 'licenses'), { recursive: true });
+const writeLicense = licenseWriter(resolve(out, 'licenses'));
+async function copyNotice(source, label, dependency) {
+  if ((await stat(source)).isDirectory()) {
+    for (const item of (await readdir(source)).sort())
+      await copyNotice(resolve(source, item), label + '__' + item, dependency);
+  } else {
+    const path = dependency.package;
+    const name = lock.packages[path].name || path.slice(path.lastIndexOf('node_modules/') + 'node_modules/'.length);
+    const file = await writeLicense(name, dependency.version, label, await readFile(source));
+    if (!dependency.license_files.includes(file)) dependency.license_files.push(file);
+  }
+}
 const unnoticed = [];
-for (const name of Object.keys(lock.packages).filter(Boolean)) {
+for (const dependency of licenses) {
+  const name = dependency.package;
   const directory = resolve(root, name);
   let notices;
   try { notices = await readdir(directory); } catch { continue; } // uninstalled optional platform package
-  notices = notices.filter(n => /^(license|licence|copying|notice)([.\-_]|$)/i.test(n));
-  for (const notice of notices) {
-    const filename = name.replaceAll('/', '__') + '__' + notice;
-    await plainCopy(resolve(directory, notice), resolve(out, 'licenses', filename));
-  }
+  notices = notices.filter(n => /^(license|licence|copying|notice)([.\-_]|$)/i.test(n)).sort();
+  for (const notice of notices)
+    await copyNotice(resolve(directory, notice), notice, dependency);
   if (notices.length || !bundled.has(name)) continue;
   const file = extraNotice(name);
   if (!file) { unnoticed.push(name); continue; }
-  await plainCopy(resolve(noticeDir, 'packages', file),
-                  resolve(out, 'licenses', name.replaceAll('/', '__') + '__LICENSE'));
+  await copyNotice(resolve(noticeDir, 'packages', file), 'LICENSE', dependency);
 }
 if (unnoticed.length) throw Error('bundled without a licence notice: ' + unnoticed.join(', '));
 // Every font family carries its licence next to it.
@@ -102,4 +115,4 @@ async function inventory(directory) {
 }
 await inventory(out);
 await writeFile(resolve(out, 'BUILD.json'),
-  JSON.stringify({ tool: 'esbuild 0.25.5', transform: 'Excalidraw 0.18.0: omit remote font fallback; retain configured local URLs', artifacts: manifest }, null, 2) + '\n');
+  JSON.stringify({ tool: `esbuild ${esbuild.version}`, transform: `Excalidraw ${excalidraw.version}: omit remote font fallback; retain configured local URLs`, artifacts: manifest }, null, 2) + '\n');

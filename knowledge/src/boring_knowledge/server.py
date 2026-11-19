@@ -217,7 +217,7 @@ def main(argv: list[str] | None = None) -> None:
             store, calling_author, args.state_dir, not args.no_call_log,
             on_discover=discover, enforce_access=True, **auth))
     except Outcome as outcome:
-        print(json.dumps(outcome.as_dict()), file=sys.stderr)
+        print(json.dumps(outcome.as_data()), file=sys.stderr)
         raise SystemExit(2) from None
 
 

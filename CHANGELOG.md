@@ -3,6 +3,108 @@
 Notable changes per release, newest first ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 [SemVer](https://semver.org/); each service is tagged on its own, `SERVICE-vX.Y.Z`, e.g. `canvas-v0.2.19`).
 
+## Canvas 0.3.0 — 2026-11-19
+
+### Upgrading
+
+<a id="shared-linux-service-upgrade"></a>
+**Shared Linux service upgrade for Canvas, Knowledge, Fishmarket, Sourcecache
+and MCP Ferry.** These releases bundle Common 0.8.0 and pair with Crocodile
+0.5.0. Choose one authentication mode, `crocodile`, `keys` or `issuer`.
+Standalone issuers require approval secrets of at least 24 characters after
+trimming whitespace and check them at startup and approval. See
+[checking and generating a secret](https://github.com/the-boring-crocodile/boring-pond-common/blob/main/CHANGELOG.md#upgrading).
+
+For legacy Crocodile roles, the Services check compares service-local callers
+with Crocodile membership. It lists callers present on only one side for
+an explicit decision and proposes old roles only for callers present on
+both sides. Resolve every difference before applying a complete grant map.
+Review the preview, apply with `--apply` and typed `APPLY`, and verify the
+intended reader and writer roles. See the
+[family update guide](https://github.com/the-boring-crocodile/boring-pond/blob/main/docs/updating.md)
+and [configuration reference](docs/CONFIGURATION.md).
+
+Remove `bind`, `port` and `behind_proxy` from container JSON. Compose now
+supplies container listeners. The deploy checks unpublished listeners on
+the declared proxy network and published listeners on loopback.
+
+**Canvas.** Route browser, sign-in and MCP traffic to the same listener.
+The resource URL supplies the browser path prefix. Review saved Compose
+and proxy configuration before the switch.
+
+### Changes
+
+- One app serves MCP and the Canvas editor. The editor distinguishes
+  expired credentials and catches drawings pushed before its first poll.
+- Crocodile installs take the service URL and caller roles and write the
+  generated private credentials directly into the service HOME.
+
+## Knowledge 0.3.0 — 2026-11-19
+
+### Upgrading
+
+Follow the [shared Linux service upgrade](#shared-linux-service-upgrade).
+Verify that the container subnet can reach the Crocodile's HTTPS proxy.
+
+### Changes
+
+- The installer registers the selected caller roles, writes private
+  credentials and checks the Crocodile connection before the switch.
+
+## Fishmarket 0.2.0 — 2026-11-19
+
+### Upgrading
+
+Follow the [shared Linux service upgrade](#shared-linux-service-upgrade).
+Keep the public proxy routes for MCP and browser transfers together.
+
+### Changes
+
+- Uploads distinguish rejected lengths, stale transfers and failures after
+  streaming begins. Browser routes omit raw URL access logs.
+
+## D365 Sourcecache 0.2.0 — 2026-11-19
+
+### Upgrading
+
+Follow the [shared Linux service upgrade](#shared-linux-service-upgrade).
+Keep the source index and configure only reader grants.
+
+### Changes
+
+- The installer copies the supplied index from a checked path and registers
+  the selected readers with Crocodile.
+
+## MCP Ferry 0.2.0 — 2026-11-19
+
+### Upgrading
+
+Follow the [shared Linux service upgrade](#shared-linux-service-upgrade).
+Review the Compose listener mapping for every selected frontend. For
+Crocodile registration, provide the URL for each configured frontend.
+
+### Changes
+
+- Each frontend has its own credential and validated listener configuration.
+  Tool discovery reports listing limits, timeouts and backend failures
+  consistently.
+
+## Boring Tunnel 0.1.0 — 2026-11-19
+
+### Upgrading
+
+Schedule the tunnel update with Crocodile 0.5.0. The default tunnel port
+range is 18530–18539. Every forwarded port must be free and covered by the
+Crocodile's rendered bind policy. Add custom ports to `server.protected_ports`
+and apply the site render first. To change an installed tunnel's ports,
+remove it and install it again with the new selection.
+
+### Changes
+
+- The optional [Boring Tunnel](tunnel/README.md) manages the Linux account,
+  SSH drop-in and Crocodile service registrations. Preflight checks the
+  selected Windows server names and explains missing bind protection.
+
 ## 2026-11-08: MCP Ferry 0.1.5, Fishmarket 0.1.15, Knowledge 0.2.16, D365 Sourcecache 0.1.19, Canvas 0.2.20
 
 Every service is relocked on Pond Common 0.7.13 (`issuer` with `pond` refused by the kit; deploy

@@ -1,12 +1,14 @@
 # boring-sourcecache-d365: the template a first install turns into
 # HOME/compose.yaml (deploy/install.py). From then on that file is the
 # operator's: install and deploy never rewrite it; the deploy changes only
-# HOME/.env (BORING_IMAGE). @UID@:@GID@ are the service account's, as the OS
+# HOME/boring-image.env (BORING_IMAGE; pass --env-file boring-image.env). @UID@:@GID@ are the service account's, as the OS
 # assigned them. More index files: add a --db line each (snapshots/ is mounted).
 
 services:
   sourcecache:
     image: ${BORING_IMAGE}
+    environment:
+      BORING_SERVICE_LISTENERS: '{"/run/config/config.json":{"bind":"0.0.0.0","port":18513}}'
     user: "@UID@:@GID@"
     restart: unless-stopped
     read_only: true

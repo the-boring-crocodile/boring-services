@@ -18,14 +18,12 @@ def setup(tmp_path, make_server):
     (tmp_path / "secret").write_text("fixture-only")
     path = tmp_path / "http.json"
     path.write_text(json.dumps({"url": "http://127.0.0.1:18599/mcp",
-        "oauth": {"issuer": service.cp.url, "introspection_url": service.cp.url + "/introspect",
-                  "client_id": "fixture", "secret_file": "secret"},
-        "access": [{"subject": "pond", "role": "writer", "author": "old-pond"},
-                   {"subject": "developer", "role": "writer"},
-                   {"subject": "reader", "role": "reader"}]}))
+        "mode": "crocodile", "crocodile": {"url": service.cp.url,
+                  "client_id": "fixture", "secret_file": "secret"}}))
     config = ServiceConfig(path)
     good = {"active": True, "aud": config.url, "exp": int(time.time()) + 60}
-    service.cp.tokens = {sub: {**good, "sub": sub} for sub in ["pond", "developer", "reader", "denied"]}
+    service.cp.tokens = {sub: {**good, "sub": sub, "role": role} for sub, role in
+                         (("pond", "writer"), ("developer", "writer"), ("reader", "reader"))}
     service.app = wrap_app(make_server(config.auth), config.url, discover_bypass=False)
     return service
 
@@ -42,7 +40,7 @@ def test_one_notebook_two_writers_reader_and_denied(tmp_path):
                 {"id": entry["id"], "expected_version": 2, "reason": "reader"}, "reader")
             assert error and refused["code"] == "forbidden"
             _, full = await service.result("kb_get", {"id": entry["id"], "history": True}, "reader")
-            assert full["created_by"] == "old-pond" and full["version"] == 2 and not full["retired"]
+            assert json.loads(full["created_by"]) == [service.cp.url, "pond"] and full["version"] == 2 and not full["retired"]
             assert (await service.call("kb_get", {"id": entry["id"]}, "denied")).status_code == 401
     asyncio.run(scenario())
 

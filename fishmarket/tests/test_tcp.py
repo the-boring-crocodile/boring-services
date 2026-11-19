@@ -22,7 +22,7 @@ def tcp_market(tmp_path):
     base=f"http://127.0.0.1:{port}/fishmarket"
     keys=tmp_path/"keys.json";_,key=add(keys,"fixture","writer",1,issuer="key:tcp")
     config_file=tmp_path/"config.json";config_file.write_text(json.dumps(
-        {"url":base+"/mcp","port":port,"keys":{"file":str(keys)}}))
+        {"url":base+"/mcp","port":port,"mode":"keys","keys":{"file":str(keys)}}))
     store=Store(tmp_path/"state",max_file=32*1024**2,quota=64*1024**2)
     app=App(store,ServiceConfig(config_file),unsafe_url_auth=True)  # the browser test opens open_url
     server=uvicorn.Server(uvicorn.Config(app,host="127.0.0.1",port=port,

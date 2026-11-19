@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import boring_deploy
+from deploy_context import deploy_context
 
 ROOT = Path(__file__).resolve().parents[1]
 CROCODILE = "https://crocodile-url.example.test"
@@ -70,7 +71,7 @@ def check(monkeypatch, answer):
         calls.append((args, image))
         return types.SimpleNamespace(stdout="Creating network\n" + json.dumps(answer) + "\n")
     monkeypatch.setattr(steps, "_compose", compose)
-    ctx = types.SimpleNamespace(image="boring-canvas:9.9.9", log=said.append)
+    ctx = deploy_context(image="boring-canvas:9.9.9", log=said.append)
     steps._check_crocodile_reach(ctx, "canvas", "/run/config/config.json")
     return calls, said
 
@@ -104,12 +105,14 @@ def test_the_check_step_reaches_with_the_config_the_compose_file_names(monkeypat
     # The step itself, not only its helper: a VM acceptance once found
     # check() using a name it had not bound.
     reached, ran, said = [], [], []
-    monkeypatch.setattr(steps, "_service", lambda ctx, image=None: ("canvas", {"command": command}))
+    monkeypatch.setattr(steps, "_service", lambda ctx, image=None: ("canvas", {"command": command,
+        "ports": [{"host_ip": "127.0.0.1", "published": "18520", "target": 18520}]}))
     monkeypatch.setattr(steps, "_check_crocodile_reach", lambda ctx, name, path, override=None: reached.append((name, path)))
-    ctx = types.SimpleNamespace(image="boring-canvas:9.9.9", log=said.append,
+    ctx = deploy_context(image="boring-canvas:9.9.9", log=said.append,
                                 release=types.SimpleNamespace(details={"module": "boring_canvas"}),
-                                run=lambda *args, **kw: ran.append(args))
+                                run=lambda *args, **kw: (ran.append(args), types.SimpleNamespace(stdout=""))[1])
     steps.check(ctx)
     assert ran and ran[0][-1] == "import boring_canvas"
-    assert said == ["canvas: compose renders with boring-canvas:9.9.9; boring_canvas imports"]
+    assert said == ["canvas: compose renders with boring-canvas:9.9.9; boring_canvas imports"] + (
+        ["canvas: configuration validates with the new image"] if inside else [])
     assert reached == ([("canvas", inside)] if inside else [])

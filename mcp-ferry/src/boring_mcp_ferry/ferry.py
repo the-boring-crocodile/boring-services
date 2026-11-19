@@ -2,7 +2,7 @@
 
 Towards the Pond each backend has its own front end, an MCP server on
 boring-service-kit: its own URL and port, the Crocodile's tokens checked by
-introspection (`access` decides who may call), registration and heartbeat.
+introspection (the Crocodile grant supplies the role), registration and heartbeat.
 Towards the backend the ferry is an MCP client, as a desktop client would be,
 on a URL only the ferry can reach. Only `tools/list` and `tools/call` cross;
 that is all a Pond's worker asks for.
@@ -13,14 +13,14 @@ service_read/service_call alike):
 - the tool must be offered (the backend lists it and the ferry's `tools`
   filter lets it through), else refused `not_found`;
 - a tool the backend marks read-only needs the `reader` role, any other the
-  `writer` role (`access`), else refused `forbidden` (backend annotations are
+  `writer` role, else refused `forbidden` (backend annotations are
   hints the admin accepted by configuring the backend);
 - the backend's answer is passed on unchanged, its own errors included;
 - one deadline (at most the Pond's call time less its margin), counted from
   the request's arrival, covers the tool-list check and the call together;
 - the backend cannot be reached, or its tool list cannot be had: refused
   `unavailable`, nothing was sent; no time left before sending: refused
-  `limit`;
+  `not_admitted`;
 - no answer to the call within the time, a connection that fails after
   sending, or a protocol error: failed, the call may have run. Nothing is
   retried.
@@ -37,7 +37,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sys
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -62,10 +61,7 @@ from boring_service_kit.tools import compact
 from . import __version__
 from .config import Backend, Gateway
 
-if sys.version_info >= (3, 11):
-    from builtins import BaseExceptionGroup
-else:  # pragma: no cover
-    from exceptiongroup import BaseExceptionGroup
+from builtins import BaseExceptionGroup
 
 log = logging.getLogger("boring_mcp_ferry")
 
@@ -166,18 +162,18 @@ class Upstream:
             if isinstance(cause, httpx2.ConnectError):
                 raise Refused("unavailable", f"the backend of {name} accepts no connection; nothing was sent") from None
             if isinstance(cause, MCPError):
-                raise Failed("backend_error", f"{name}'s backend answered with a protocol error: "
+                raise Failed("upstream_error", f"{name}'s backend answered with a protocol error: "
                              f"{self.redact(cause.message)}",
                              backend_code=cause.code, effects="unknown") from None
             if isinstance(cause, httpx2.ReadTimeout) and (seconds := _CALL_READ_TIMEOUT.get(None)) is not None:
                 raise _call_timeout(name, seconds) from None
             if isinstance(cause, httpx2.TransportError):
-                raise Failed("connection", f"the connection to {name}'s backend failed "
+                raise Failed("unavailable", f"the connection to {name}'s backend failed "
                              f"({type(cause).__name__}); the call may have run", effects="unknown") from None
             if isinstance(cause, Outcome):
                 raise cause from None
             if isinstance(cause, Exception):  # anything else: its type, its text without the URL
-                raise Failed("backend_error", f"{name}'s backend could not be used ({type(cause).__name__}: "
+                raise Failed("upstream_error", f"{name}'s backend could not be used ({type(cause).__name__}: "
                              f"{self.redact(str(cause))[:300]}); the call may have run", effects="unknown") from None
             raise
 
@@ -190,13 +186,12 @@ class Upstream:
                 page = await client.list_tools(cursor=cursor, cache_mode="bypass")
                 tools.extend(page.tools)
                 if len(tools) > MAX_TOOLS:
-                    raise Failed("backend_error", f"{self.backend.name}'s backend lists more than {MAX_TOOLS} tools",
-                                 effects="none")
+                    raise Refused("limit", f"{self.backend.name}'s backend lists more than {MAX_TOOLS} tools")
                 cursor = page.next_cursor
                 if not cursor:
                     return tools
-            raise Failed("backend_error", f"{self.backend.name}'s backend lists more than {MAX_TOOL_PAGES} pages "
-                         "of tools", effects="none")
+            raise Refused("limit", f"{self.backend.name}'s backend lists more than {MAX_TOOL_PAGES} pages "
+                          "of tools")
         result: list[Tool] = await self._request(listing)
         return result
 
@@ -264,8 +259,7 @@ class Carried:
         cap = self.timeout or FETCH_CAP_SECONDS
         answered, tools = await _bounded(asyncio.ensure_future(self._refresh()), cap)
         if not answered:
-            raise Failed("timeout", f"{self.backend.name}'s backend did not list its tools within {cap:g} s",
-                         effects="none")
+            raise Refused("timeout", f"{self.backend.name}'s backend did not list its tools within {cap:g} s")
         result: dict[str, Tool] = tools
         return result
 
@@ -299,7 +293,7 @@ class Carried:
         if left <= 0:
             if asyncio.iscoroutine(work):
                 work.close()
-            raise Refused("limit", f"no time left for {self.backend.name}'s backend; nothing was sent")
+            raise Refused("not_admitted", f"no time left for {self.backend.name}'s backend; nothing was sent")
         answered, result = await _bounded(asyncio.ensure_future(work), left, cancel=not shared)
         if answered:
             return result
@@ -361,7 +355,7 @@ class FerryServer(MCPServer):
         try:
             result = await self.carried.call(name, arguments, self.carried.deadline())
         except Outcome as outcome:
-            answer = compact(outcome.as_dict(), is_error=True)
+            answer = compact(outcome.as_data(), is_error=True)
             self.calls.record(name, arguments, outcome.status, outcome.code, started, _size(answer))
             return answer
         self.calls.record(name, arguments, "error" if result.is_error else "succeeded", None, started, _size(result))
@@ -462,7 +456,7 @@ class GatewayServer(MCPServer):
                     raise Refused("invalid_request", f"{name}: tool (a name) and arguments (an object)")
                 result = await carried.call(tool, inner, carried.deadline(), read_only_only=name == "service_read")
         except Outcome as outcome:
-            answer = compact(outcome.as_dict(), is_error=True)
+            answer = compact(outcome.as_data(), is_error=True)
             self.calls.record(name, arguments, outcome.status, outcome.code, started, _size(answer))
             return answer
         self.calls.record(name, arguments, "error" if result.is_error else "succeeded", None, started, _size(result))

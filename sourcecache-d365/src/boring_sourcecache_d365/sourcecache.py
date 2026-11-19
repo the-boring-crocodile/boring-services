@@ -260,23 +260,23 @@ def build(source: str, index: str, name: str, progress: Any = None,
     the installation records; missing, the snapshot's versions say "unknown".
     """
     if type(readers) is not int or not 1 <= readers <= READERS_MAX:
-        raise Refused("invalid_request", f"readers must be an integer of 1..{READERS_MAX}", value=readers)
+        raise Refused("invalid_request", f"readers must be an integer of 1..{READERS_MAX}", value=str(readers))
     stamped = _versions(versions)
     root, target = Path(source), Path(index)
     if not root.is_dir():
-        raise Refused("not_found", "source folder does not exist", path=source)
+        raise Refused("not_found", "source folder does not exist", path=str(source))
     if target.exists():
         raise Refused("stale", "index already exists; build a new versioned file and restart with it",
                       path=str(target))
     drive = target.drive  # "D:" on Windows, "" elsewhere
     if drive and not Path(drive + "\\").exists():
         raise Refused("not_found", f"drive {drive} does not exist on this machine; choose a data drive for --db",
-                      path=index)
+                      path=str(index))
     try:  # the folder is created if needed
         target.parent.mkdir(parents=True, exist_ok=True)
         fd, temp = tempfile.mkstemp(prefix=".sourcecache-", suffix=".db", dir=target.parent)
     except OSError as error:
-        raise Refused("forbidden", f"cannot create the folder or staged index for --db: {error}", path=index) from None
+        raise Refused("forbidden", f"cannot create the folder or staged index for --db: {error}", path=str(index)) from None
     os.close(fd)
     staged = Path(temp)
     try:
@@ -385,7 +385,7 @@ class Index:
 
     def __init__(self, path: str, stall_seconds: float = STALL_SECONDS_DEFAULT, pond_bound: bool = False) -> None:
         if not Path(path).is_file():
-            raise Refused("not_found", "index file does not exist", path=path)
+            raise Refused("not_found", "index file does not exist", path=str(path))
         self.path = path
         self.stall_seconds = stall_seconds
         self.pond_bound = pond_bound  # the stall guard is the Pond's call bound, not --stall-seconds

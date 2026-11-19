@@ -21,7 +21,7 @@ from boring_service_kit.testing import OWN_URL, Service, mcp_headers, mcp_meta
 from boring_mcp_ferry import ferry
 from boring_mcp_ferry.config import ConfigError, read
 from boring_mcp_ferry.server import prepare, quiet_http_logs
-from boring_service_kit.outcomes import Failed
+from boring_service_kit.outcomes import Failed, Refused
 
 
 def load_backend(url):
@@ -82,16 +82,12 @@ async def backend(port):
         await task
 
 
-def write_config(tmp_path, service, backend_url, tools=None, pond=False, name="fixture", own_url=OWN_URL,
+def write_config(tmp_path, service, backend_url, tools=None, name="fixture", own_url=OWN_URL,
                  timeout_seconds=None):
     (tmp_path / "secret").write_text("fixture-only")
     (tmp_path / f"{name}-url").write_text(backend_url + "\n")
-    spec = {"url": own_url,
-            "oauth": {"issuer": service.cp.url, "introspection_url": service.cp.url + "/introspect",
-                      "client_id": "fixture", "secret_file": "secret"},
-            "access": [{"subject": "pond", "role": "writer"}, {"subject": "meadow", "role": "reader"}]}
-    if pond:
-        spec["pond"] = {"url": service.cp.url, "client_id": "fixture", "secret_file": "secret"}
+    spec = {"url": own_url, "mode": "crocodile",
+            "crocodile": {"url": service.cp.url, "client_id": "fixture", "secret_file": "secret"}}
     (tmp_path / f"{name}.json").write_text(json.dumps(spec))
     backend_spec = {"service": f"{name}.json", "upstream": {"url_file": f"{name}-url"}}
     if timeout_seconds is not None:
@@ -103,9 +99,9 @@ def write_config(tmp_path, service, backend_url, tools=None, pond=False, name="f
 
 
 @asynccontextmanager
-async def ferry_with(tmp_path, backend_url, tools=None, pond=False, timeout_seconds=None):
+async def ferry_with(tmp_path, backend_url, tools=None, timeout_seconds=None):
     service = Service()
-    path = write_config(tmp_path, service, backend_url, tools, pond, timeout_seconds=timeout_seconds)
+    path = write_config(tmp_path, service, backend_url, tools, timeout_seconds=timeout_seconds)
     (front,), upstreams = prepare(path, tmp_path / "state", True)
     service.app = front.app
     async with service:
@@ -149,7 +145,7 @@ def test_allow_list_offers_only_named_tools(tmp_path):
 
 
 @pytest.mark.parametrize("timeout_seconds", [None, 0.45])
-def test_backend_call_uses_its_configured_timeout(tmp_path, monkeypatch, timeout_seconds):
+def test_backend_call_uses_its_configured_timeout_and_crocodile_cap(tmp_path, monkeypatch, timeout_seconds):
     monkeypatch.setattr(ferry, "HTTP_TIMEOUT_SECONDS", 0.25)
 
     async def scenario():
@@ -164,7 +160,8 @@ def test_backend_call_uses_its_configured_timeout(tmp_path, monkeypatch, timeout
 
             carried.upstream.http.event_hooks["request"].append(read_timeout)
             error, result = await svc.result("slow", {"seconds": 0.65}, "pond")
-            assert reads and set(reads) == {timeout_seconds}
+            expected = front.config.call_limit if timeout_seconds is None else timeout_seconds
+            assert reads and set(reads) == {expected}
             if timeout_seconds is None:
                 assert (error, result) == (False, "late")
             else:
@@ -183,7 +180,9 @@ def test_listing_and_health_still_have_separate_caps(tmp_path, monkeypatch):
 
     async def scenario():
         async with ferry_with(tmp_path, "http://127.0.0.1:1/mcp") as (_, front):
-            carried = front.server.carried
+            # A plain MCP frontend has no Crocodile call budget; keep its separate
+            # listing/health caps exercised independently of the Crocodile fixture.
+            carried = ferry.Carried(front.server.carried.backend, front.server.carried.upstream, call_limit=None)
             upstream = carried.upstream
             reads = []
 
@@ -192,7 +191,7 @@ def test_listing_and_health_still_have_separate_caps(tmp_path, monkeypatch):
                 await asyncio.Event().wait()
 
             upstream.http.event_hooks["request"].append(hang)
-            with pytest.raises(Failed, match="did not list its tools within 0.05 s") as failure:
+            with pytest.raises(Refused, match="did not list its tools within 0.05 s") as failure:
                 await asyncio.wait_for(carried._capped_refresh(), timeout=1)
             assert failure.value.code == "timeout"
             assert not await asyncio.wait_for(upstream.healthy(), timeout=1)
@@ -357,7 +356,7 @@ def test_backend_urls_stay_out_of_the_logs(tmp_path, caplog):
 
 def test_front_ends_wire_the_named_registration(tmp_path, caplog):
     async def scenario():
-        async with ferry_with(tmp_path, f"http://127.0.0.1:{free_port()}/mcp", pond=True) as (_, front):
+        async with ferry_with(tmp_path, f"http://127.0.0.1:{free_port()}/mcp") as (_, front):
             with caplog.at_level(logging.INFO, logger="boring_mcp_ferry"):
                 await front.config.watchdog.register()
     asyncio.run(scenario())
@@ -383,9 +382,9 @@ def test_heartbeat_only_while_the_backend_answers(tmp_path):
     async def scenario():
         port = free_port()
         async with backend(port) as url:
-            async with ferry_with(tmp_path, url, pond=True) as (svc, _):
+            async with ferry_with(tmp_path, url) as (svc, _):
                 assert (await discover_request(svc)).status_code == 200
-        async with ferry_with(tmp_path / "down", f"http://127.0.0.1:{port}/mcp", pond=True) as (svc, _):
+        async with ferry_with(tmp_path / "down", f"http://127.0.0.1:{port}/mcp") as (svc, _):
             response = await discover_request(svc)
             assert response.status_code == 503 and "not reachable" in response.text
     (tmp_path / "down").mkdir()
@@ -436,7 +435,7 @@ def test_front_ends_must_not_listen_on_every_address(tmp_path, bind):
     try:
         path = write_config(tmp_path, service, "http://127.0.0.1:1/mcp", own_url="https://ferry.example.test/x/mcp")
         spec = json.loads((tmp_path / "fixture.json").read_text())
-        (tmp_path / "fixture.json").write_text(json.dumps({**spec, "bind": bind, "port": 18520}))
+        (tmp_path / "fixture.json").write_text(json.dumps({**spec, "bind": bind, "behind_proxy": True, "port": 18520}))
         with pytest.raises(ConfigError, match="not every address"):
             prepare(path, None, False)
     finally:
@@ -461,7 +460,7 @@ def test_two_backends_cannot_share_a_service_identity(tmp_path):
 def test_a_backend_front_end_may_take_access_keys(tmp_path):
     """Every front end is a kit front end: a backend's own takes what a gateway takes."""
     (tmp_path / "keys.json").write_text("{}")
-    (tmp_path / "s.json").write_text(json.dumps({"url": "http://127.0.0.1:18600/mcp", "keys": {"file": "keys.json"}}))
+    (tmp_path / "s.json").write_text(json.dumps({"url": "http://127.0.0.1:18600/mcp", "mode": "keys", "keys": {"file": "keys.json"}}))
     (tmp_path / "config.json").write_text(json.dumps({"backends": {"a": {
         "service": "s.json", "upstream": {"url": "http://x/mcp"}}}}))
     fronts, upstreams = prepare(tmp_path / "config.json", None, False)
@@ -477,9 +476,8 @@ def test_sigterm_stops_every_front_end(tmp_path):
         for name, port in zip(("one", "two"), ports):
             (tmp_path / f"{name}.json").write_text(json.dumps({
                 "url": f"http://127.0.0.1:{port}/mcp",
-                "oauth": {"issuer": service.cp.url, "introspection_url": service.cp.url + "/introspect",
-                          "client_id": f"fixture-{name}", "secret_file": "secret"},
-                "access": [{"subject": "pond", "role": "writer"}]}))
+                "mode": "crocodile", "crocodile": {"url": service.cp.url,
+                          "client_id": f"fixture-{name}", "secret_file": "secret"}}))
             backends[name] = {"service": f"{name}.json", "upstream": {"url": f"http://127.0.0.1:{free_port()}/mcp"}}
         (tmp_path / "config.json").write_text(json.dumps({"backends": backends}))
         process = subprocess.Popen([sys.executable, "-m", "boring_mcp_ferry.server", "http", "--config",
@@ -592,7 +590,7 @@ def test_gateway_configuration(tmp_path):
 def test_a_gateway_may_take_the_box_access_keys(tmp_path):
     """Copilot on a dev box: a loopback gateway with access keys only (no Crocodile)."""
     (tmp_path / "keys.json").write_text("{}")
-    (tmp_path / "g.json").write_text(json.dumps({"url": "http://127.0.0.1:18600/mcp", "keys": {"file": "keys.json"}}))
+    (tmp_path / "g.json").write_text(json.dumps({"url": "http://127.0.0.1:18600/mcp", "mode": "keys", "keys": {"file": "keys.json"}}))
     (tmp_path / "config.json").write_text(json.dumps({
         "backends": {"a": {"upstream": {"url": "http://127.0.0.1:1/mcp"}}},
         "gateways": {"g": {"service": "g.json", "backends": ["a"]}}}))
@@ -602,10 +600,10 @@ def test_a_gateway_may_take_the_box_access_keys(tmp_path):
 
 def own_signin(tmp_path, name, port, pond=None):
     """A front end that signs its person in itself: Claude on the web, no Crocodile."""
-    (tmp_path / "approval").write_text("fixture-approval-only")
+    (tmp_path / "approval").write_text("fixture-approval-only-for-synthetic-tests")
     spec = {"url": f"http://127.0.0.1:{port}/mcp", "bind": "127.0.0.1", "port": port,
-            "issuer": {"database": f"{name}-issuer.db", "approval_secret_file": "approval", "subject": "robin"},
-            "access": [{"subject": "robin", "role": "writer"}]}
+            "mode": "issuer", "issuer": {"database": f"{name}-issuer.db",
+            "approval_secret_file": "approval", "subject": "robin", "role": "writer"}}
     if pond is not None:
         spec["pond"] = pond
     (tmp_path / f"{name}.json").write_text(json.dumps(spec))
@@ -652,7 +650,7 @@ def test_own_signin_and_pond_registration_exclude_each_other(tmp_path, kind):
         else:
             config["gateways"] = {"g": {"service": door, "backends": ["fixture"]}}
         (tmp_path / "config.json").write_text(json.dumps(config))
-        with pytest.raises(ConfigError, match="issuer and pond exclude each other"):
+        with pytest.raises(ConfigError, match="pond is replaced by mode=crocodile"):
             prepare(tmp_path / "config.json", None, False)
     finally:
         service.cp.close()
@@ -662,18 +660,26 @@ def test_a_front_end_without_a_pond_keeps_its_backend_state_to_itself(tmp_path):
     """The heartbeat answer (503 while the backend is down) comes before the token check: only a
     front end that registers with a Pond gives it."""
     async def scenario():
-        async with ferry_with(tmp_path, f"http://127.0.0.1:{free_port()}/mcp") as (svc, _):
-            response = await discover_request(svc)
-            assert response.status_code != 503 and "not reachable" not in response.text
+        door = own_signin(tmp_path, "door", 18601)
+        (tmp_path / "config.json").write_text(json.dumps({"backends": {"one": {
+            "service": door, "upstream": {"url": f"http://127.0.0.1:{free_port()}/mcp"}}}}))
+        (front,), upstreams = prepare(tmp_path / "config.json", None, False)
+        try:
+            async with Service(front.app, "http://127.0.0.1:18601/mcp") as svc:
+                response = await discover_request(svc)
+                assert response.status_code != 503 and "not reachable" not in response.text
+        finally:
+            for upstream in upstreams:
+                await upstream.close()
     asyncio.run(scenario())
 
 
 def test_a_pond_and_a_person_reach_one_backend_through_two_front_ends(tmp_path):
-    """The backend's own front end towards the Pond (`oauth`, `pond`), and a gateway with its own
+    """The backend's own front end in Crocodile mode, and a gateway with its own
     sign-in for a person's client carrying the same backend: both at once, one upstream."""
     service = Service()
     try:
-        write_config(tmp_path, service, "http://127.0.0.1:1/mcp", pond=True)
+        write_config(tmp_path, service, "http://127.0.0.1:1/mcp")
         config = json.loads((tmp_path / "config.json").read_text())
         config["gateways"] = {"tools": {"service": own_signin(tmp_path, "tools", 18601), "backends": ["fixture"]}}
         (tmp_path / "config.json").write_text(json.dumps(config))

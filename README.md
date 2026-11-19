@@ -17,12 +17,35 @@ discovery and call tools. Use it when a client benefits from a smaller tool
 list. The backends retain their operations, permissions and running-job
 handles; the gateway forwards their results without retrying their work.
 
+[Boring Tunnel](tunnel/README.md) is a separate optional Linux component for
+pondNT's desktop tunnel: restricted SSH account and Crocodile service registration,
+with no container or daemon. Standard service builds do not include it.
+
 All of it — code, tests, docs — was written by AI (OpenAI's models and Anthropic's Claude); Wald decided what to build, tested it, ran it and had the last word ([all of it is AI](https://github.com/the-boring-crocodile/boring-pond/blob/main/README.md#all-of-it-is-ai)).
 
-Every service speaks Streamable HTTP MCP with OAuth and an explicit
-reader/writer list, configured by one JSON file. It can sign clients in by
-itself, trust a Crocodile or another issuer, or take access keys:
+Every service speaks Streamable HTTP MCP and selects one authentication mode
+in its JSON configuration: Crocodile, keys or its own issuer. The Crocodile
+grant, each key or the own issuer supplies the reader/writer role:
 [CONFIGURATION](docs/CONFIGURATION.md), examples in [examples/](examples/).
+
+## Outcomes for service authors
+
+[Outcome causes](OUTCOME_CODES.md) declares the local additions; all other locally produced causes use Common's shared list.
+
+Use Common 0.8's `Refused(code, message, **details)` before work starts and
+`Failed(code, message, **details)` after work starts and may have had effects.
+The code names the cause independently of status. The service-kit wrapper
+renders `as_data()` as one compact JSON text error:
+`{"status":"refused","code":"stale","message":"read it again","current_version":2}`.
+Details are flat, JSON values; convert a Path to str at the construction site.
+The wrapper stays text-only so clients do not resend a second structured copy.
+
+A downstream outcome needs `status: refused|failed`, a valid lowercase code
+and a string message. Preserve that status, code and details when carrying it.
+A bare `{code,message}` is no longer valid: the worker reports failed/upstream_error
+with the service's text and unknown effects. `as_dict()` was removed; use
+`as_data()`. OAuth/HTTP authority and JSON-RPC listing errors keep their own
+protocol shapes. Tool lifecycle records keep their own fields.
 
 ## Where a service lives
 
@@ -44,9 +67,9 @@ another host:
 
 Whichever it is, the reverse proxy forwards the service's paths on that name
 to its loopback ports: the MCP path, that path's metadata
-(`/.well-known/oauth-protected-resource/<MCP path>`), Canvas's `/canvas/*`,
-and with its own sign-in also the paths above. Canvas's `--public-url` names
-the host its pages are on. The deploy checks what applies: the endpoint at the
+(`/.well-known/oauth-protected-resource/<MCP path>`), Canvas's browser routes
+under the MCP URL's base, and with its own sign-in also the paths above.
+Canvas derives the browser address from its MCP URL. The deploy checks what applies: the endpoint at the
 configured URL always; that the issuer it trusts (a Crocodile, or another
 issuer's introspection URL) can be reached from inside the container, when it
 trusts one; that it registered, only when it serves a Pond.
@@ -80,8 +103,7 @@ deploy's smoke checks that the MCP URL answers 401 naming it.
 
 | Service | Paths | To |
 |---|---|---|
-| Canvas | `/canvas/*` (the canvas pages) | `127.0.0.1:18510` |
-| | `/services/canvas/mcp` and its metadata | `127.0.0.1:18511` |
+| Canvas | `/services/canvas/*` (MCP and browser) and its MCP metadata | `127.0.0.1:18511` |
 | Knowledge | `/services/knowledge/mcp` and its metadata | `127.0.0.1:18512` |
 | Sourcecache | `/services/sourcecache-d365/mcp` and its metadata | `127.0.0.1:18513` |
 | Fishmarket | `/fishmarket/*` and `/.well-known/oauth-protected-resource/fishmarket/mcp` | `fishmarket:8000` on the proxy's Docker network (no host port; with a proxy on the host instead: `docker network create fishmarket-net`, use that as `N` in the block, add `--loopback-port` to its first install and route to `127.0.0.1:18518`; an install made without it: add `ports: ["127.0.0.1:18518:8000"]` under the service in `/opt/boring-fishmarket/compose.yaml` and run its `deploy` again) |
@@ -90,10 +112,7 @@ deploy's smoke checks that the MCP URL answers 401 naming it.
 For Canvas, in Caddy (the same pattern for every row of the table), inside the site block that already holds the
 Crocodile's routes (`crocodile-url.example.test { ... }`):
 
-        handle /canvas/* {
-            reverse_proxy 127.0.0.1:18510
-        }
-        handle /services/canvas/mcp {
+        handle /services/canvas/* {
             reverse_proxy 127.0.0.1:18511
         }
         handle /.well-known/oauth-protected-resource/services/canvas/mcp {
@@ -127,259 +146,167 @@ bundle must already hold your root, e.g. through `update-ca-certificates`):
           - /etc/ssl/certs/ca-certificates.crt:/etc/ssl/certs/ca-certificates.crt:ro   # beside the existing mounts
 
 then run the deploy again as above; its check uses these settings. Until a
-deploy has passed, `docker compose config` in the home fails with
-"BORING_IMAGE not set": the deploy writes `.env` with the image only when it
-gets that far.
+deploy has passed, the image setting is not there yet: deploy writes its
+`boring-image.env` only at the switch. The operator's `.env` is kept on
+updates and uninstall; migration removes only the legacy `BORING_IMAGE=`
+line, preserving its mode and all other lines.
+
+For manual Compose commands in the service home, use
+`sudo docker compose --env-file boring-image.env config` (or `logs`,
+`up -d`, `exec`, ...). If you keep an operator `.env`, load it first:
+`sudo docker compose --env-file .env --env-file boring-image.env config`.
+Deploy, smoke, uninstall and the Canvas admin helper choose these files
+automatically. Include the same env flags when adding a `-f` path.
+
+### Back to a release built on Common before 0.8
+
+The old deployer rewrites `.env` as 0644, including any operator values.
+Before invoking it, choose the service HOME from `/etc/boring-pond/homes.json`
+and a new root-only recovery directory. Save an existing operator file with
+`sudo cp -p "$SERVICE_HOME/.env" "$RECOVERY/operator.env"`.
+Keep HOME inaccessible to unrelated local accounts during this window; the
+backup alone does not protect the old writer's temporary 0644 copy.
+
+Set `boring-image.env` aside in that recovery directory for the old runtime.
+After the old deploy, including a failed attempt, retain its `BORING_IMAGE=`
+line privately if it rewrote `.env`. Restore the operator file with
+`sudo cp -p "$RECOVERY/operator.env" "$SERVICE_HOME/.env"`, preserving its
+owner and mode, then put that image line back without changing the mode.
+The old runtime reads its image choice from `.env`, not
+`boring-image.env`. If there was no operator `.env`, retain the old deployer's
+image-only file. If the attempt stops before the switch and you keep the newer
+runtime, restore its saved `boring-image.env` too. Verify the selected old image and private file permissions
+before any manual start, then restore HOME's original directory permissions.
+
+When rolling back across a listener/configuration format change, restore
+the saved service JSON and Compose together, including Ferry's frontend files. The ordered procedure and the post-adoption resume point are in
+[updating a site](https://github.com/the-boring-crocodile/boring-pond/blob/main/docs/updating.md#4-rolling-back).
 
 ### First install, one block per service
 
-Each block runs in one shell and stops at the first step that fails. It
-downloads the release (`V`; the tested set is in boring-pond's
-[releases and versions](https://github.com/the-boring-crocodile/boring-pond/blob/main/docs/updating.md#releases-and-versions),
-the newest on the [releases page](https://github.com/the-boring-crocodile/boring-services/releases),
-tags `SERVICE-vV`), checks and unpacks it as root, writes the service's
-`config.json` into `/root/SERVICE-config`, has the Crocodile register the
-service for the example site's Ponds `pond` and `garden`
-([SERVICES_AND_PIRATES](https://github.com/the-boring-crocodile/boring-crocodile/blob/main/docs/SERVICES_AND_PIRATES.md)),
-and installs it.
+Read the [release notes](CHANGELOG.md) and choose your component's archive
+from the [releases page](https://github.com/the-boring-crocodile/boring-services/releases).
+The download block starts with Canvas. To install a different service, use
+its `V` and `S` assignment from the update blocks below.
 
-`service-add` prints the service's client id and secret once, as JSON. The
-block writes that straight into a file only root can read, never into a chat
-or a log (the redirection runs inside the root shell; with a plain
-`sudo ... > file` your own shell would open the file), then moves the secret
-into `credentials/mcp-client-secret` (mode 0600), puts the client id into
-`config.json` and deletes the printout. `set -C` refuses an existing capture file, preserving a once-only secret if
-that step is accidentally repeated. Keep the file until the remaining lines
-have moved its secret successfully. `service-add` takes effect at once:
-the running Crocodile accepts the service's registration from then on, and
-the Ponds see it after its first deploy has registered it. The `"bind":
-"0.0.0.0"` in each config is inside the container; Docker publishes the port
-on 127.0.0.1 only. Put your own
-Ponds into `--ponds` and the `access` list (after
-[getting started](https://github.com/the-boring-crocodile/boring-pond/blob/main/docs/getting-started.md):
-`pond`, and `kingfisher` if you added it). Change the
-`access` list (who may read or write) before you run the block, or later in
-the service's `HOME/config/config.json`.
+    V=0.3.0 S=canvas
+    f=boring-$S-$V-linux-x86_64.tar.gz
+    u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
+    mkdir -p ~/Downloads && cd ~/Downloads &&
+    curl -fLO "$u/$f" && curl -fLO "$u/$f.sha256" &&
+    sha256sum -c "$f.sha256" &&
+    sudo install -d -m 0700 /root/releases &&
+    sudo tar xzf "$f" -C /root/releases
 
-**If a block stops.** Before `service-add`, fix the cause and paste it
-again. If `service-add` itself fails, inspect `service-list` and the private
-capture before retrying: shell redirection may have created an empty file
-even though the command failed. Remove an empty failed capture only after
-confirming what was registered; preserve any file containing the once-only
-secret. After it, the service is registered (pasting the whole block again
-stops at `service-add`: "exists"), and until the next line has run, its
-one-time printout, secret included, is in `/root/SERVICE-config/service-add.txt`
-(root's only). Then either run the remaining lines from the one that failed
-(a stop at the deploy: fix and run `deploy` again, as above), or start over:
-`sudo boring-crocodile-admin service-list` shows the record, and
-`sudo boring-crocodile-admin service-remove NAME --expected-definition 'RECORD'`
-removes it, with RECORD that entry's JSON.
+Each command below registers and installs the service. The installer reads the
+local Crocodile's address from its admin inventory, shows the service-add plan
+and asks for typed APPLY. The credential goes straight into HOME/credentials;
+the generated config contains one authority block. No manual service-add,
+secret capture or per-service access list is needed. Add `--check` for a
+read-only plan.
 
 #### Canvas
 
-    V=0.2.20 S=canvas D=crocodile-url.example.test
-    f=boring-$S-$V-linux-x86_64.tar.gz
-    u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
-    mkdir -p ~/Downloads && cd ~/Downloads &&
-    curl -fLO "$u/$f" && curl -fLO "$u/$f.sha256" &&
-    sha256sum -c "$f.sha256" &&            # must print OK; if not, the block stops here
-    sudo mkdir -p /root/releases && sudo tar xzf "$f" -C /root/releases &&
-    sudo install -d -m 0700 /root/$S-config &&
-    sudo tee /root/$S-config/config.json > /dev/null <<EOF &&
-    {"url": "https://$D/services/$S/mcp", "bind": "0.0.0.0", "port": 18511,
-     "oauth": {"issuer": "https://$D", "introspection_url": "https://$D/introspect",
-               "client_id": "svc_FROM_SERVICE_ADD", "secret_file": "../credentials/mcp-client-secret"},
-     "pond": {"url": "https://$D", "client_id": "svc_FROM_SERVICE_ADD", "secret_file": "../credentials/mcp-client-secret"},
-     "access": [{"subject": "pond", "role": "writer", "author": "pond"},
-                {"subject": "garden", "role": "writer", "author": "garden"}]}
-    EOF
-    sudo sh -c "set -C; umask 077 && boring-crocodile-admin service-add $S --url https://$D/services/$S/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
-    sudo python3 - /root/$S-config credentials/mcp-client-secret <<'PY' &&
-    import json, os, pathlib, sys          # the secret into its file, the client id into the JSON files
-    d, secret = pathlib.Path(sys.argv[1]), sys.argv[2]; os.umask(0o077); added = json.loads((d / "service-add.txt").read_text())
-    (d / secret).parent.mkdir(parents=True, exist_ok=True); (d / secret).write_text(added["client_secret"])
-    for f in d.rglob("*.json"): f.write_text(f.read_text().replace("svc_FROM_SERVICE_ADD", added["client_id"]))
-    (d / "service-add.txt").unlink()
-    PY
-    sudo /root/releases/boring-$S-$V/deploy --install --config-dir /root/$S-config --public-url https://$D
+    sudo /root/releases/boring-canvas-VERSION/deploy --install --url https://crocodile-url.example.test/services/canvas/mcp --callers pond=writer,garden=writer
 
-Each canvas then has its page at `https://crocodile-url.example.test/canvas/<id>`
-(`/canvas/` itself answers 404). `--web-bind ADDRESS` publishes the pages
-elsewhere than 127.0.0.1.
+MCP and browser routes share one listener. A canvas page is at
+`https://crocodile-url.example.test/services/canvas/canvas/<id>`.
+Add `--unsafe-url-auth` only when links should carry the browser token.
 
 #### Knowledge
 
-    V=0.2.16 S=knowledge D=crocodile-url.example.test
-    f=boring-$S-$V-linux-x86_64.tar.gz
-    u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
-    mkdir -p ~/Downloads && cd ~/Downloads &&
-    curl -fLO "$u/$f" && curl -fLO "$u/$f.sha256" &&
-    sha256sum -c "$f.sha256" &&            # must print OK; if not, the block stops here
-    sudo mkdir -p /root/releases && sudo tar xzf "$f" -C /root/releases &&
-    sudo install -d -m 0700 /root/$S-config &&
-    sudo tee /root/$S-config/config.json > /dev/null <<EOF &&
-    {"url": "https://$D/services/$S/mcp", "bind": "0.0.0.0", "port": 18512,
-     "oauth": {"issuer": "https://$D", "introspection_url": "https://$D/introspect",
-               "client_id": "svc_FROM_SERVICE_ADD", "secret_file": "../credentials/mcp-client-secret"},
-     "pond": {"url": "https://$D", "client_id": "svc_FROM_SERVICE_ADD", "secret_file": "../credentials/mcp-client-secret"},
-     "access": [{"subject": "pond", "role": "writer", "author": "pond"},
-                {"subject": "garden", "role": "reader", "author": "garden"}]}
-    EOF
-    sudo sh -c "set -C; umask 077 && boring-crocodile-admin service-add $S --url https://$D/services/$S/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
-    sudo python3 - /root/$S-config credentials/mcp-client-secret <<'PY' &&
-    import json, os, pathlib, sys          # the secret into its file, the client id into the JSON files
-    d, secret = pathlib.Path(sys.argv[1]), sys.argv[2]; os.umask(0o077); added = json.loads((d / "service-add.txt").read_text())
-    (d / secret).parent.mkdir(parents=True, exist_ok=True); (d / secret).write_text(added["client_secret"])
-    for f in d.rglob("*.json"): f.write_text(f.read_text().replace("svc_FROM_SERVICE_ADD", added["client_id"]))
-    (d / "service-add.txt").unlink()
-    PY
-    sudo /root/releases/boring-$S-$V/deploy --install --config-dir /root/$S-config
+    sudo /root/releases/boring-knowledge-VERSION/deploy --install --url https://crocodile-url.example.test/services/knowledge/mcp --callers pond=writer,garden=reader
+
+[Install one service](https://github.com/the-boring-crocodile/boring-pond/blob/main/docs/install-service.md)
+walks through the first Knowledge install.
+[Add access later](https://github.com/the-boring-crocodile/boring-pond/blob/main/docs/add-service.md)
+changes the caller/role map with one grant command and no restart.
 
 #### Sourcecache
 
-It serves a snapshot you built first ([Building a snapshot](sourcecache-d365/README.md#building-a-snapshot));
-`I` below is that file.
+Build a [snapshot](sourcecache-d365/README.md#building-a-snapshot) first and
+stage it as a protected root-owned input:
 
-    V=0.1.19 S=sourcecache-d365 D=crocodile-url.example.test I=/root/snapshot.db
-    f=boring-$S-$V-linux-x86_64.tar.gz
-    u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
-    mkdir -p ~/Downloads && cd ~/Downloads &&
-    curl -fLO "$u/$f" && curl -fLO "$u/$f.sha256" &&
-    sha256sum -c "$f.sha256" &&            # must print OK; if not, the block stops here
-    sudo mkdir -p /root/releases && sudo tar xzf "$f" -C /root/releases &&
-    sudo install -d -m 0700 /root/$S-config &&
-    sudo tee /root/$S-config/config.json > /dev/null <<EOF &&
-    {"url": "https://$D/services/$S/mcp", "bind": "0.0.0.0", "port": 18513,
-     "oauth": {"issuer": "https://$D", "introspection_url": "https://$D/introspect",
-               "client_id": "svc_FROM_SERVICE_ADD", "secret_file": "../credentials/mcp-client-secret"},
-     "pond": {"url": "https://$D", "client_id": "svc_FROM_SERVICE_ADD", "secret_file": "../credentials/mcp-client-secret"},
-     "access": [{"subject": "pond", "role": "reader"},
-                {"subject": "garden", "role": "reader"}]}
-    EOF
-    sudo sh -c "set -C; umask 077 && boring-crocodile-admin service-add $S --url https://$D/services/$S/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
-    sudo python3 - /root/$S-config credentials/mcp-client-secret <<'PY' &&
-    import json, os, pathlib, sys          # the secret into its file, the client id into the JSON files
-    d, secret = pathlib.Path(sys.argv[1]), sys.argv[2]; os.umask(0o077); added = json.loads((d / "service-add.txt").read_text())
-    (d / secret).parent.mkdir(parents=True, exist_ok=True); (d / secret).write_text(added["client_secret"])
-    for f in d.rglob("*.json"): f.write_text(f.read_text().replace("svc_FROM_SERVICE_ADD", added["client_id"]))
-    (d / "service-add.txt").unlink()
-    PY
-    sudo /root/releases/boring-$S-$V/deploy --install --config-dir /root/$S-config --index "$I"
+    sudo /root/releases/boring-sourcecache-d365-VERSION/deploy --install --url https://crocodile-url.example.test/services/sourcecache-d365/mcp --callers pond=reader,garden=reader --index /root/snapshot.db
 
 #### Fishmarket
 
-It has no host port: it joins the Docker network your proxy runs on (`N`
-below, which must exist) and the proxy reaches it as `fishmarket:8000`.
+The proxy's Docker network must exist; it reaches the service as
+`fishmarket:8000` there. Replace edge with that network's name:
 
-    V=0.1.15 S=fishmarket D=crocodile-url.example.test N=edge
-    f=boring-$S-$V-linux-x86_64.tar.gz
-    u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
-    mkdir -p ~/Downloads && cd ~/Downloads &&
-    curl -fLO "$u/$f" && curl -fLO "$u/$f.sha256" &&
-    sha256sum -c "$f.sha256" &&            # must print OK; if not, the block stops here
-    sudo mkdir -p /root/releases && sudo tar xzf "$f" -C /root/releases &&
-    sudo install -d -m 0700 /root/$S-config &&
-    sudo tee /root/$S-config/config.json > /dev/null <<EOF &&
-    {"url": "https://$D/fishmarket/mcp", "bind": "0.0.0.0", "port": 8000,
-     "oauth": {"issuer": "https://$D", "introspection_url": "https://$D/introspect",
-               "client_id": "svc_FROM_SERVICE_ADD", "secret_file": "../credentials/mcp-client-secret"},
-     "pond": {"url": "https://$D", "client_id": "svc_FROM_SERVICE_ADD", "secret_file": "../credentials/mcp-client-secret"},
-     "access": [{"subject": "pond", "role": "writer", "author": "pond"},
-                {"subject": "garden", "role": "writer", "author": "garden"}]}
-    EOF
-    sudo sh -c "set -C; umask 077 && boring-crocodile-admin service-add $S --url https://$D/fishmarket/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
-    sudo python3 - /root/$S-config credentials/mcp-client-secret <<'PY' &&
-    import json, os, pathlib, sys          # the secret into its file, the client id into the JSON files
-    d, secret = pathlib.Path(sys.argv[1]), sys.argv[2]; os.umask(0o077); added = json.loads((d / "service-add.txt").read_text())
-    (d / secret).parent.mkdir(parents=True, exist_ok=True); (d / secret).write_text(added["client_secret"])
-    for f in d.rglob("*.json"): f.write_text(f.read_text().replace("svc_FROM_SERVICE_ADD", added["client_id"]))
-    (d / "service-add.txt").unlink()
-    PY
-    sudo /root/releases/boring-$S-$V/deploy --install --config-dir /root/$S-config --edge-network "$N"
+    sudo /root/releases/boring-fishmarket-VERSION/deploy --install --url https://crocodile-url.example.test/fishmarket/mcp --callers pond=writer,garden=writer --edge-network edge
 
-Add `--unsafe-url-auth` only if receipts should also carry `open_url`, a link with the token in it.
+For a proxy on the host, use a dedicated network and add `--loopback-port`
+to publish `127.0.0.1:18518`. Add `--unsafe-url-auth` only when receipts
+should carry a link with its token.
 
 #### MCP Ferry
 
-The ferry carries third-party MCP servers ("backends"). The block installs it
-towards the Pond (without a Pond: [mcp-ferry/README, Without a Pond](mcp-ferry/README.md#without-a-pond))
-with one backend, `B`, whose front end is
-`https://crocodile-url.example.test/services/B/mcp` on port 18520; the
-backend's own address, with any secret path, goes into
-`credentials/B-url` (replace the example line). The backend itself is a
-container you add to the ferry's `compose.yaml` afterwards, on a network only
-the two share ([mcp-ferry/README](mcp-ferry/README.md); the template's comments
-show one for Home Assistant), and the next `deploy` starts it. Until then the
-ferry runs and the service answers `unavailable` to the Ponds; on the host,
-`sudo docker compose logs ferry` in `/opt/boring-mcp-ferry` shows the
-Crocodile's pings answered 503, and 200 once the backend runs.
+Prepare the business routing and upstream credentials under a protected,
+root-owned `/root/ferry-config`. For example, config.json:
 
-    V=0.1.5 S=mcp-ferry D=crocodile-url.example.test B=homeassistant
-    f=boring-$S-$V-linux-x86_64.tar.gz
-    u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
-    mkdir -p ~/Downloads && cd ~/Downloads &&
-    curl -fLO "$u/$f" && curl -fLO "$u/$f.sha256" &&
-    sha256sum -c "$f.sha256" &&            # must print OK; if not, the block stops here
-    sudo mkdir -p /root/releases && sudo tar xzf "$f" -C /root/releases &&
-    sudo install -d -m 0700 /root/$S-config &&
-    sudo install -d -m 0700 /root/$S-config/services /root/$S-config/credentials &&
-    sudo tee /root/$S-config/config.json > /dev/null <<EOF &&
-    {"backends": {"$B": {"service": "services/$B.json", "upstream": {"url_file": "../credentials/$B-url"}}}}
-    EOF
-    sudo tee /root/$S-config/services/$B.json > /dev/null <<EOF &&
-    {"url": "https://$D/services/$B/mcp", "bind": "172.16.46.2", "port": 18520,
-     "oauth": {"issuer": "https://$D", "introspection_url": "https://$D/introspect",
-               "client_id": "svc_FROM_SERVICE_ADD", "secret_file": "../../credentials/$B-client-secret"},
-     "pond": {"url": "https://$D", "client_id": "svc_FROM_SERVICE_ADD", "secret_file": "../../credentials/$B-client-secret"},
-     "access": [{"subject": "pond", "role": "reader"}, {"subject": "garden", "role": "reader"}]}
-    EOF
-    sudo sh -c "umask 077 && echo http://$B:8086/YOUR-SECRET-PATH > /root/$S-config/credentials/$B-url" &&
-    sudo sh -c "set -C; umask 077 && boring-crocodile-admin service-add $B --url https://$D/services/$B/mcp --ponds pond,garden > /root/$S-config/service-add.txt" &&
-    sudo python3 - /root/$S-config credentials/$B-client-secret <<'PY' &&
-    import json, os, pathlib, sys          # the secret into its file, the client id into the JSON files
-    d, secret = pathlib.Path(sys.argv[1]), sys.argv[2]; os.umask(0o077); added = json.loads((d / "service-add.txt").read_text())
-    (d / secret).parent.mkdir(parents=True, exist_ok=True); (d / secret).write_text(added["client_secret"])
-    for f in d.rglob("*.json"): f.write_text(f.read_text().replace("svc_FROM_SERVICE_ADD", added["client_id"]))
-    (d / "service-add.txt").unlink()
-    PY
-    sudo /root/releases/boring-$S-$V/deploy --install --config-dir /root/$S-config
+```json
+{"backends":{"homeassistant":{"service":"services/homeassistant.json","upstream":{"url_file":"../credentials/homeassistant-url"}}}}
+```
+
+Use `{}` for services/homeassistant.json; the installer fills its authority.
+Provision credentials/homeassistant-url privately with the backend's URL and
+any secret path. No credential belongs in a command line or chat.
+The [Ferry guide](mcp-ferry/README.md) describes isolated backend networks.
+
+    sudo /root/releases/boring-mcp-ferry-VERSION/deploy --install --config-dir /root/ferry-config --url https://crocodile-url.example.test/services/homeassistant/mcp --callers pond=reader,garden=reader
+
+Several frontends take `--url NAME=URL,...` for exactly the selected backend
+and gateway frontend names. Each gets its own grant and credential. First
+install assigns listener addresses from the template's fixed default-network
+address and published TCP target range, recording them in Compose. The
+backend containers belong in the operator's Compose file, on separate
+networks shared only with Ferry. An unavailable backend does not stop Ferry.
 
 ### First-install settings
 
-| Service | First-install settings |
+| Service | Settings |
 |---|---|
-| all | `--config-dir DIR`: the service's configuration (`config.json`), the files it names and `credentials/` (the secrets) |
-| Canvas | `--public-url https://DOMAIN`, `--web-bind ADDRESS` (default 127.0.0.1), `--unsafe-url-auth` |
-| Fishmarket | `--edge-network NAME` (the Docker network the reverse proxy uses), `--loopback-port` (also on the host's `127.0.0.1:18518`, for a reverse proxy on the host), `--unsafe-url-auth` |
-| MCP Ferry | none beyond `--config-dir` (`config.json`, `services/`, `credentials/`); backends are blocks in its `compose.yaml` ([mcp-ferry/README](mcp-ferry/README.md)) |
-| Sourcecache | `--index FILE` (a built snapshot) |
+| Crocodile mode | `--url MCP_URL`, `--callers NAME=ROLE,...`; no prepared auth config for Canvas, Knowledge, Sourcecache or Fishmarket |
+| keys/own issuer | `--config-dir DIR` with the explicit mode and its files; no `--url` registration |
+| Canvas | `--unsafe-url-auth` |
+| Fishmarket | `--edge-network NAME`, optional `--loopback-port`, `--unsafe-url-auth` |
+| Ferry | `--config-dir DIR` for routing, selected frontend files and upstream credentials |
+| Sourcecache | `--index FILE` |
 
-The install creates the service account, `state/`, `config/` (a copy of
-`--config-dir`), `credentials/` (a copy of its `credentials/`) and `compose.yaml` in the service's home, by default the
-release's `/opt/boring-SERVICE` (a site that keeps its stacks elsewhere, such
-as `/opt/docker/boring-SERVICE`, names the home as the deploy's argument on
-the first install, which records it in `/etc/boring-pond/homes.json`); from then on those files are the site's: a
-later change goes into `HOME/config/` (a secret into `HOME/credentials/`) and
-takes effect when the service restarts, and a deploy only replaces the image.
-Uninstall keeps `state/`, `config/` and `credentials/`; with `--delete-data` it first seals them (root's, mode 0700) and
-then removes the account, which it keeps when a seal fails. The deploy's
-smoke check waits until an unauthenticated request to
-the service's URL answers 401 naming that URL's resource metadata (RFC 9728,
-`/.well-known/oauth-protected-resource/...`, whose `resource` is the URL), and
-the running container has logged an acknowledged registration since it started;
-the proxy must route both paths. In `pond` or `garden`,
-`service_list` now shows the service.
+Selected input files, directories and their parents must be root-owned,
+protected from other writers and free of links. Plans show paths and
+permissions; apply checks again before effects. Container JSON has no bind,
+port or behind_proxy fields: Compose owns listeners and exposure.
+
+HOME is by default the release's `/opt/boring-SERVICE`. Name another HOME as the deploy's
+argument on first install; it is recorded in `/etc/boring-pond/homes.json`.
+The installer creates the service account, state/, config/, credentials/ and
+Compose file. Later deploys replace the image and keep the operator's Compose.
+Grant/role changes need no restart and take effect within at most60seconds.
+Configuration changes require a service restart.
+
+If an install fails, inspect the named step, service-list and the installed
+files before retrying. Registration may have succeeded before a later failure;
+preserve the once-only credential. The installer refuses to overwrite it.
+Uninstall keeps persistent files. With `--delete-data`, it removes matching
+registrations after stop through the admin's reviewed plan, seals retained
+folders, then removes the account; it never deletes data.
+
+A successful deploy checks endpoint metadata and acknowledged registration.
+The proxy must route the MCP URL and its protected-resource metadata. In a
+granted Pond, service_list and service_describe show the service.
 
 ### Updating a service
 
 Read the release's entry in [CHANGELOG.md](CHANGELOG.md) first. Then the service's block, in one
 shell: download, check, unpack, the deploy's read-only `--check`, and the
-deploy, which runs only when the check passed. The versions are the tested set;
-put in the one you update to.
+deploy, which runs only when the check passed. Each block uses the version
+from the 0.5 family release set.
 
 Canvas:
 
-    V=0.2.20 S=canvas
+    V=0.3.0 S=canvas
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -391,7 +318,7 @@ Canvas:
 
 Knowledge:
 
-    V=0.2.16 S=knowledge
+    V=0.3.0 S=knowledge
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -403,7 +330,7 @@ Knowledge:
 
 Sourcecache:
 
-    V=0.1.19 S=sourcecache-d365
+    V=0.2.0 S=sourcecache-d365
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -415,7 +342,7 @@ Sourcecache:
 
 Fishmarket:
 
-    V=0.1.15 S=fishmarket
+    V=0.2.0 S=fishmarket
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -427,7 +354,7 @@ Fishmarket:
 
 MCP Ferry:
 
-    V=0.1.5 S=mcp-ferry
+    V=0.2.0 S=mcp-ferry
     f=boring-$S-$V-linux-x86_64.tar.gz
     u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
     mkdir -p ~/Downloads && cd ~/Downloads &&
@@ -445,9 +372,9 @@ its configuration.
 
 ## Development
 
-boring-service-kit comes from Pond Common releases (0.7), pinned by
-hash in each service's `requirements.lock` (`scripts/lock.py`). One check, every
-service in its own fresh venv from its lock:
+boring-service-kit comes from Pond Common's 0.8 release line. Use the exact
+Common versions and hashes from each service's `requirements.lock`
+(`scripts/lock.py`). This check uses a fresh venv for each service:
 
     python scripts/check.py --common-wheels <Common dist>
 

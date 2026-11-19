@@ -7,10 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 import boring_deploy
+from deploy_context import deploy_context
 from test_deploy_smoke import load_steps
 
 FERRY_SRC = str(Path(__file__).resolve().parents[1] / "mcp-ferry/src")
-PREFIX = ("import sys, types\nsys.path.insert(0, " + repr(FERRY_SRC) + ")\n"
+SOURCE_PATHS = [str(Path(__file__).resolve().parents[2] / "boring-pond-common/packages" / p / "src")
+                for p in ("boring-service-kit", "boring-registry", "boring-outcomes", "boring-file-core")]
+PREFIX = ("import sys, types\nsys.path[:0] = " + repr([FERRY_SRC, *SOURCE_PATHS]) + "\n"
           "types.get=lambda u, **k: types.SimpleNamespace(status_code=503 if 'bad' in u else 401)\n")
 START = "2026-10-28T00:00:00Z"
 
@@ -22,11 +25,14 @@ def configuration(tmp_path, mode, bad=False, pond=True):
         backend["service"] = "backend.json"
     if mode != "backend":
         config["gateways"] = {"gateway": {"service": "gateway.json", "backends": ["backend"]}}
+    (tmp_path / "secret").write_text("fixture-only")
     for name in ("backend", "gateway"):
         (tmp_path / (name + ".json")).write_text(json.dumps({
             "url": f"https://{name}.invalid/mcp",
-            **({"pond": {"url": f"https://{'bad-' if bad and name == 'gateway' else ''}{name}-authority.invalid"}}
-               if pond else {})}))
+            **({"mode": "crocodile", "crocodile": {
+                "url": f"https://{'bad-' if bad and name == 'gateway' else ''}{name}-authority.invalid",
+                "client_id": name, "secret_file": "secret"}} if pond else
+               {"mode": "keys", "keys": {"file": "keys.json"}})}))
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
     return path
@@ -44,7 +50,7 @@ def test_reach_checks_all_frontend_authorities(tmp_path, monkeypatch, mode):
     steps = load_steps()
     monkeypatch.setattr(steps, "_compose", lambda ctx, *args, **kw: generated(args))
     said = []
-    steps._check_crocodile_reach(SimpleNamespace(image="fixture", log=said.append), "ferry", str(path))
+    steps._check_crocodile_reach(deploy_context(image="fixture", log=said.append), "ferry", str(path))
     assert len(said) == (2 if mode == "mixed" else 1)
     assert any(("gateway-authority" if mode == "gateway" else "backend-authority") in s for s in said)
 
@@ -54,10 +60,10 @@ def test_bad_gateway_authority_fails_before_switch(tmp_path, monkeypatch):
     steps = load_steps()
     monkeypatch.setattr(steps, "_compose", lambda ctx, *args, **kw: generated(args))
     with pytest.raises(boring_deploy.Failure, match="bad-gateway-authority"):
-        steps._check_crocodile_reach(SimpleNamespace(image="fixture", log=lambda s: None), "ferry", str(path))
+        steps._check_crocodile_reach(deploy_context(image="fixture", log=lambda s: None), "ferry", str(path))
 
 
-def test_reach_checks_registration_and_introspection_authorities(tmp_path, monkeypatch):
+def test_reach_refuses_deleted_separate_authority(tmp_path, monkeypatch):
     path = configuration(tmp_path, "gateway")
     front_path = tmp_path / "gateway.json"
     front = json.loads(front_path.read_text())
@@ -65,15 +71,17 @@ def test_reach_checks_registration_and_introspection_authorities(tmp_path, monke
     front_path.write_text(json.dumps(front))
     steps = load_steps()
     monkeypatch.setattr(steps, "_compose", lambda ctx, *args, **kw: generated(args))
-    with pytest.raises(boring_deploy.Failure, match="bad-introspection"):
-        steps._check_crocodile_reach(SimpleNamespace(image="fixture", log=lambda s: None), "ferry", str(path))
+    with pytest.raises(subprocess.CalledProcessError) as refused:
+        steps._check_crocodile_reach(deploy_context(image="fixture", log=lambda s: None), "ferry", str(path))
+
+    assert "oauth is replaced by mode=crocodile" in refused.value.stderr
 
 
 def test_frontend_without_authority_skips_reach_only(tmp_path, monkeypatch):
     path = configuration(tmp_path, "gateway", pond=False)
     steps = load_steps()
     monkeypatch.setattr(steps, "_compose", lambda ctx, *args, **kw: generated(args))
-    steps._check_crocodile_reach(SimpleNamespace(image="fixture", log=lambda s: pytest.fail(s)),
+    steps._check_crocodile_reach(deploy_context(image="fixture", log=lambda s: pytest.fail(s)),
                                  "ferry", str(path))
 
 
@@ -105,7 +113,7 @@ def test_smoke_covers_all_frontends(tmp_path, monkeypatch, mode, problem):
         return SimpleNamespace(stdout=Path(args[-1]).read_text())
 
     monkeypatch.setattr(steps, "_compose", compose)
-    ctx = SimpleNamespace(home=tmp_path, log=lambda _: None)
+    ctx = deploy_context(home=tmp_path, log=lambda _: None)
     if mode != "backend" and problem:
         with pytest.raises(boring_deploy.Failure, match="gateway"):
             steps.smoke(ctx)
@@ -115,3 +123,28 @@ def test_smoke_covers_all_frontends(tmp_path, monkeypatch, mode, problem):
     if mode != "backend":
         expected += ["https://gateway.invalid/mcp"]
     assert seen == expected
+
+
+@pytest.mark.parametrize("crocodile", [True, False])
+def test_single_service_smoke_uses_validated_authority_for_registration(tmp_path, monkeypatch, crocodile):
+    configuration(tmp_path, "backend", pond=crocodile)
+    path = tmp_path / "backend.json"
+    steps = load_steps()
+    monkeypatch.setattr(steps, "SMOKE_SECONDS", 0)
+    monkeypatch.setattr(steps.time, "sleep", lambda _: None)
+    monkeypatch.setattr(steps, "_service", lambda ctx: ("managed", {"command": ["--config", str(path)]}))
+    monkeypatch.setattr(steps, "endpoint_identity", lambda _: None)
+    from datetime import datetime, timezone
+    monkeypatch.setattr(steps, "_started", lambda *a: (START, datetime(2026, 10, 28, tzinfo=timezone.utc)))
+    def compose(ctx, *args, **kwargs):
+        if "-c" in args:
+            return generated(args)
+        assert args[0] == "logs"
+        return SimpleNamespace(stdout="")
+    monkeypatch.setattr(steps, "_compose", compose)
+    ctx = deploy_context(home=tmp_path, log=lambda _: None)
+    if crocodile:
+        with pytest.raises(boring_deploy.Failure, match="no Pond registration by managed"):
+            steps.smoke(ctx)
+    else:
+        steps.smoke(ctx)

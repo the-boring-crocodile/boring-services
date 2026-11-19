@@ -7,16 +7,13 @@ from importlib.resources import files
 import http.client
 import json
 import re
-import socketserver
 import tempfile
-import threading
 from pathlib import Path
 
-from boring_canvas.server import make_handler
 from boring_canvas.web_views import MAX_BODY_BYTES, page_title, render_page, script_json
 from boring_canvas.storage import CanvasStore
 
-from canvas_fixtures import legacy_ownerless_canvas, new_canvas
+from canvas_fixtures import legacy_ownerless_canvas, new_canvas, LiveApp
 
 TEMPLATE = files("boring_canvas").joinpath("templates/canvas.html").read_text(encoding="utf-8")
 CANVAS_ID = "0" * 32
@@ -109,18 +106,10 @@ class LiveServerTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.store = CanvasStore(Path(self._tmp.name))
-        handler = make_handler(self.store, self.public_base_url)
-        handler.log_message = lambda *args: None  # type: ignore[method-assign]
-        self.httpd = socketserver.ThreadingTCPServer(("127.0.0.1", 0), handler)
-        self.httpd.daemon_threads = True
-        self._thread = threading.Thread(target=self.httpd.serve_forever, args=(0.05,),
-                                        daemon=True)
-        self._thread.start()
+        self.httpd = LiveApp(self.store, self.public_base_url)
 
     def tearDown(self) -> None:
         self.httpd.shutdown()
-        self.httpd.server_close()
-        self._thread.join()
         self.store.close()
         self._tmp.cleanup()
 
@@ -227,7 +216,8 @@ class RequestBodyTests(LiveServerTestCase):
             with self.subTest(value=value):
                 status, _, body = self.push({"Content-Length": value})
                 self.assertEqual(status, 400)
-                self.assertIn("Content-Length", json.loads(body)["error"])
+                # Uvicorn rejects malformed HTTP framing before the ASGI app.
+                self.assertTrue(body)
 
     def test_limit_applies_to_every_body_route(self) -> None:
         big = {"Content-Length": str(MAX_BODY_BYTES + 1)}
@@ -286,7 +276,7 @@ class UrlAuthTests(LiveServerTestCase):
         page = body.decode()
         self.assertIn('fragment.get("this-is-unsafe-dont-do-this-auth")', page)
         self.assertIn("history.replaceState", page)
-        self.assertLess(page.index("history.replaceState"), page.index("JSON.stringify({ token: linked })"))
+        self.assertLess(page.index("history.replaceState"), page.index("signIn(linked)"))
 
     def test_a_query_token_signs_nobody_in(self) -> None:
         status, headers, page = self.request(

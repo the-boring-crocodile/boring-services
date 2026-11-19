@@ -6,9 +6,10 @@
 Installs the locked dependencies (--require-hashes) into a new virtual
 environment, then boring-services from a copy of its tracked files, and runs the
 tests there. Each service gets its own environment from its own lock; the
-cross-service tests in tests/ run with knowledge, canvas and sourcecache-d365
-together. Test tools come from requirements-dev.txt, pinned by version, not by
-hash. Needs uv (PATH or $UV) and the package index (or uv's cache)
+shared deploy and integration tests in tests/ run with knowledge, canvas and
+sourcecache-d365. Ferry's deploy tests have their own environment because its
+lock pins a different truststore version. Test tools are pinned by version in
+requirements-dev.txt. Needs uv (PATH or $UV) and the package index (or uv's cache)
 for the locked wheels and pytest. Exit status 0 means every step passed.
 """
 import subprocess
@@ -23,6 +24,11 @@ _, develop = load()
 ROOT = Path(__file__).resolve().parents[1]
 SERVICES = ("knowledge", "canvas", "sourcecache-d365", "fishmarket", "mcp-ferry")
 TOGETHER = ("knowledge", "canvas", "sourcecache-d365")
+FERRY_DEPLOY_TESTS = (
+    "tests/test_deploy_config.py",
+    "tests/test_ferry_config_validation.py",
+    "tests/test_legacy_access.py",
+)
 
 
 def deploy_wheel(args):
@@ -36,15 +42,19 @@ def main():
     failed = []
     with tempfile.TemporaryDirectory(prefix="services-check-") as tmp:
         tmp = Path(tmp)
-        runs = [(s, (s,), ROOT / s) for s in SERVICES] + [("together", TOGETHER, ROOT)]
-        for name, members, where in runs:
+        runs = [(s, (s,), ROOT / s, ("tests",)) for s in SERVICES]
+        runs += [
+            ("ferry-deploy", ("mcp-ferry",), ROOT, FERRY_DEPLOY_TESTS),
+            ("together", TOGETHER, ROOT, ("tests", *(f"--ignore={p}" for p in FERRY_DEPLOY_TESTS))),
+        ]
+        for name, members, where, tests in runs:
             print(f"== {name}", flush=True)
             python = develop.environment(develop.uv(), args.python, tmp / f"venv-{name}",
                                          [ROOT / m / "requirements.lock" for m in members], args.common_wheels,
                                          [develop.package(ROOT, tmp / f"src-{name}-{m}", m) for m in members],
-                                         constraints, ["-r", str(ROOT / "requirements-dev.txt"), *(deploy_wheel(args) if name == "together" else [])])
+                                         constraints, ["-r", str(ROOT / "requirements-dev.txt"), *(deploy_wheel(args) if where == ROOT else [])])
             try:
-                develop.run(python, "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests", cwd=where)
+                develop.run(python, "-m", "pytest", "-q", "-p", "no:cacheprovider", *tests, cwd=where)
             except subprocess.CalledProcessError:
                 failed.append(name)
     if failed:

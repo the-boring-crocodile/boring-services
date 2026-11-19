@@ -135,10 +135,10 @@ class Store:
             stored = dict(self.db.execute("SELECT key, value FROM meta")) if has_meta else {}
             if stored and stored.get("schema") not in {"1", "2", SCHEMA_VERSION}:
                 raise Refused("unsupported", "unknown notebook schema; database left unchanged",
-                              schema=stored.get("schema"))
+                              schema=str(stored.get("schema")))
             if stored and stored.get("role") != role:
                 raise Refused("invalid_request", "this notebook was created with another role",
-                              role=stored.get("role"), requested=role)
+                              role=str(stored.get("role")), requested=role)
             self.db.execute("PRAGMA journal_mode = WAL")
             self.db.execute("PRAGMA foreign_keys = ON")
             self.db.executescript("BEGIN IMMEDIATE;" + SCHEMA)

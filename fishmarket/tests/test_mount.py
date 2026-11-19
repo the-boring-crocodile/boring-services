@@ -21,7 +21,7 @@ def test_prefix_metadata_sibling_mcp_and_discovery_privacy(market,tmp_path):  # 
         config.watchdog=Watchdog()
         fish=App(store,config)
         sibling_file=tmp_path/"sibling.json"
-        sibling_file.write_text(json.dumps({"url":ORIGIN+"/mcp",
+        sibling_file.write_text(json.dumps({"url":ORIGIN+"/mcp", "mode":"keys",
                                            "keys":{"file":str(tmp_path/"keys.json")}}))
         sibling_config=ServiceConfig(sibling_file)
         sibling_server=MCPServer("existing",**sibling_config.auth)
@@ -83,10 +83,10 @@ def test_fishmarket_as_its_own_issuer(tmp_path):
     from boring_fishmarket.storage import Store
     claude, callback = "https://claude.ai/oauth/x.json", "https://claude.ai/cb"
     (tmp_path / "oauth").mkdir(mode=0o700)
-    (tmp_path / "approval").write_text("market-approval")
+    (tmp_path / "approval").write_text("market-approval-for-synthetic-tests")
     (tmp_path / "config.json").write_text(json.dumps({
-        "url": URL, "issuer": {"database": "oauth/oauth.db", "approval_secret_file": "approval", "subject": "robin"},
-        "access": [{"subject": "robin", "role": "writer"}]}))
+        "url": URL, "mode": "issuer", "issuer": {"database": "oauth/oauth.db",
+        "approval_secret_file": "approval", "subject": "robin", "role": "writer"}}))
     config = ServiceConfig(tmp_path / "config.json")
     config.issuer.fetch = lambda client_id: metadata_document(client_id, callback)
     store = Store(tmp_path / "state", max_file=1024, quota=4096)
@@ -97,7 +97,7 @@ def test_fishmarket_as_its_own_issuer(tmp_path):
             async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app=fish), base_url=ORIGIN) as http:
                 metadata = (await http.get("/.well-known/oauth-authorization-server")).json()
                 assert metadata["client_id_metadata_document_supported"] is True
-                tokens = await sign_in(http, URL, claude, callback, "market-approval")
+                tokens = await sign_in(http, URL, claude, callback, "market-approval-for-synthetic-tests")
                 listed = await http.post(URL, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {
                     "_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28",
                               "io.modelcontextprotocol/clientCapabilities": {},

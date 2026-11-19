@@ -224,7 +224,7 @@ class App:
             "range": 416,
         }
         return JSONResponse(
-            exc.as_dict(),
+            exc.as_data(),
             status_code=codes.get(exc.code, 400) if exc.status == "refused" else 500,
         )
 
@@ -343,10 +343,10 @@ class App:
                 with self.store.path(transfer_id, ".part").open("xb") as handle:
                     async for chunk in request.stream():
                         if not await disk_call(self.store.valid_stream, transfer_id):
-                            raise Failed("expired", "upload expired; no publication")
+                            raise Failed("stale", "upload is no longer active; no publication")
                         if count + len(chunk) > declared:
                             raise Failed(
-                                "size",
+                                "limit",
                                 "upload exceeded declared length; no publication",
                             )
                         for at in range(0, len(chunk), CHUNK):
@@ -354,7 +354,7 @@ class App:
                             await disk_call(append, handle, digest, piece)
                         count += len(chunk)
                     if count != declared:
-                        raise Failed("size", "upload incomplete; no publication")
+                        raise Failed("limit", "upload incomplete; no publication")
                     await disk_call(durable, handle)
                 await disk_call(self.store.upload_finish, transfer_id, count, digest.hexdigest())
                 return {"uploaded": True, "size": count, "sha": digest.hexdigest()}

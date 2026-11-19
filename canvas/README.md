@@ -64,7 +64,7 @@ otherwise.
   - `get_edits` returns the newest edits that fit one answer; `before` (the
     `seq` the answer gives) pages back through the 500 the server keeps per
     canvas, since its last restart.
-- **Browser:** `https://crocodile-url.example.test/canvas/<id>` (in the
+- **Browser:** `https://crocodile-url.example.test/services/canvas/canvas/<id>` (in the
   [example site](https://github.com/the-boring-crocodile/boring-pond/blob/main/docs/example-site.md)), signed in with the per-canvas
   browser token (then kept in a cookie). Over MCP the token appears only
   inside an `open_url` (with `--unsafe-url-auth`), in the link's fragment,
@@ -79,9 +79,9 @@ otherwise.
   so a raster image a person pastes or imports is kept as an element without
   its picture and shows empty after a reload. Draw, or have the agent push an
   SVG (rebuilt from the stored scene on every load), instead.
-- **Web port:** serves only the person's browser (page, session, saves,
-  polling). Pushing, reading back and creating are MCP tools; the web port
-  creates no canvas and accepts no pushed drawing.
+- **Browser routes:** page, session, saves and polling share the MCP listener.
+  Pushing, reading back and creating remain authenticated MCP tools; no browser
+  route creates a canvas or accepts a pushed drawing.
 - **Admin:** `sudo boring-canvas-admin list | delete <id> | token NAME
   [--owner CALLER] | limits` (on Docker installs a wrapper runs it in the
   container). `token` replaces the canvas's stored token hash (the old token
@@ -99,14 +99,19 @@ several producers broadcasting.
 
 ## How it runs
 
-One process, two listeners: the web port (stdlib `http.server`, routes under
-`/canvas/` only, bodies need `Content-Length` and are capped at 8 MiB) and the
-MCP port (Streamable HTTP, stateless). The reverse proxy routes `/canvas/*` to
-the web port (`handle`, not `handle_path`) and the MCP paths to the MCP port.
+One ASGI app and listener serve MCP (Streamable HTTP, stateless), issuer
+endpoints and browser routes. The configured MCP `url` ends in `/mcp`; its
+base owns browser links, asset paths and cookie paths. For example,
+`https://canvas.example.test/services/canvas/mcp` serves a canvas at
+`/services/canvas/canvas/<id>`. The reverse proxy forwards these paths unchanged
+to the same listener. Browser bodies need `Content-Length` and are capped at
+8 MiB; saves authenticate before receiving the body. Raw URL access logs are
+disabled, including old query links. There is no web-only mode or separate
+`--host`, `--port` or `--public-base-url` server setting.
 The editor is unmodified Excalidraw 0.18, bundled with the service (with the
 licences of everything bundled, `frontend/notices/`); the page loads nothing
 from elsewhere, and its Content-Security-Policy allows only its own server. Configuration: [CONFIGURATION](../docs/CONFIGURATION.md). Install
-settings (`--public-url`, `--web-bind`, `--unsafe-url-auth`):
+settings (`--url`, `--callers`, `--unsafe-url-auth`):
 [README](../README.md#installing-on-linux).
 
 ## State and backup

@@ -26,7 +26,7 @@ def market(tmp_path):
     _,other=add(keys,"two","writer",1)
     _,reader=add(keys,"read","reader",1)
     config_path=tmp_path/"config.json"
-    config_path.write_text(json.dumps({"url":URL,"keys":{"file":str(keys)}}))
+    config_path.write_text(json.dumps({"url":URL,"mode":"keys","keys":{"file":str(keys)}}))
     config=ServiceConfig(config_path)
     store=Store(root,max_file=32*1024**2,quota=64*1024**2)
     app=App(store,config,unsafe_url_auth=True)  # as deployed

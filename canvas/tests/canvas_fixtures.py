@@ -75,3 +75,42 @@ def backdate(store: CanvasStore, canvas_id: str, age_s: float) -> None:
     with store._write():
         store.db.execute("UPDATE canvases SET created_s = ? WHERE id = ?",
                          (time.time() - age_s, canvas_id))
+
+class LiveApp:
+    """The actual one-app Canvas on one ephemeral uvicorn socket."""
+    def __init__(self, store, base=None):
+        import json
+        import socket
+        import threading
+        import uvicorn
+        from boring_service_kit.http import ServiceConfig
+        from boring_canvas.server import App
+        self.tmp = tempfile.TemporaryDirectory()
+        folder = Path(self.tmp.name)
+        (folder / "keys.json").write_text('{"issuer":"key:canvas-fixture","keys":[]}')
+        (folder / "config.json").write_text(json.dumps({"url": (base or "http://127.0.0.1") + "/mcp",
+            "mode":"keys", "keys":{"file":"keys.json"}}))
+        app = App(store, ServiceConfig(folder / "config.json"))
+        self.socket = socket.socket()
+        self.socket.bind(("127.0.0.1", 0))
+        self.server_address = self.socket.getsockname()
+        self.server = uvicorn.Server(uvicorn.Config(app, log_level="error", access_log=False))
+        self.thread = threading.Thread(target=self.server.run, kwargs={"sockets":[self.socket]}, daemon=True)
+        self.thread.start()
+        deadline = time.monotonic() + 5
+        while not self.server.started:
+            if not self.thread.is_alive() or time.monotonic() >= deadline:
+                self.shutdown()
+                raise RuntimeError("Canvas fixture failed to start")
+            self.thread.join(0.01)
+
+    def shutdown(self):
+        self.server.should_exit = True
+        self.thread.join(5)
+        self.socket.close()
+        self.tmp.cleanup()
+        if self.thread.is_alive():
+            raise RuntimeError("Canvas fixture failed to stop")
+
+    def server_close(self):
+        pass

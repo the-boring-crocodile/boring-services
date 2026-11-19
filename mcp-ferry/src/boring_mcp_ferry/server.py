@@ -20,14 +20,14 @@ import socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from boring_service_kit.calllog import CallLog
-from boring_service_kit.http import ServiceConfig
+from boring_service_kit.http import ServiceConfig, ServiceInfo
 from boring_service_kit.pond import run
 from boring_service_kit.tools import default_state_dir
 
-from .config import Backend, ConfigError, read
+from .config import Backend, ConfigError, Ferry, Gateway, read
 from .ferry import ArrivalGate, Carried, HealthGate, Upstream, front, gateway_front
 
 
@@ -54,51 +54,63 @@ def _every_address(bind: str) -> bool:
         return False  # a host name: the kit resolves it to its addresses
 
 
-def _service(path: Any, where: str) -> ServiceConfig:
-    """A front end's ServiceConfig: whatever the kit accepts (the Crocodile's tokens, its own sign-in,
-    access keys; the kit refuses its own sign-in with Pond registration), bound to the ferry's own address."""
-    try:
-        config = ServiceConfig(path)
-    except (OSError, ValueError) as error:
-        raise ConfigError(f"{where}: {error}") from None
-    if _every_address(config.bind):
-        raise ConfigError(f"{where}: bind the ferry's own address on its default network (172.16.46.2 in the "
-                          "template), or loopback, not every address: the backends share the ferry's other "
-                          "networks and must not reach its front ends")
-    return config
+Config = TypeVar("Config")
+
+
+def _where(spec: Backend | Gateway) -> str:
+    group = "backends" if isinstance(spec, Backend) else "gateways"
+    return f"{group}.{spec.name}.service"
+
+
+def _read_services(ferry: Ferry, loader: Callable[[Path], Config]) -> list[tuple[Backend | Gateway, Config]]:
+    configured = []
+    for spec in ferry.frontends:
+        assert spec.service is not None
+        try:
+            config = loader(spec.service)
+        except (OSError, ValueError) as error:
+            raise ConfigError(f"{_where(spec)}: {error}") from None
+        configured.append((spec, config))
+    return configured
+
+
+def _check_frontends(configured: list[tuple[Backend | Gateway, ServiceInfo]]) -> None:
+    """The same frontend constraints for read-only checks and runtime preparation."""
+    identities: dict[str, dict[str | int, str]] = {"port": {}, "URL": {}, "client_id": {}}
+    for spec, config in configured:
+        if _every_address(config.bind):
+            raise ConfigError(f"{_where(spec)}: bind the ferry's own address on its default network (172.16.46.2 in the "
+                              "template), or loopback, not every address: the backends share the ferry's other "
+                              "networks and must not reach its front ends")
+        for what, key in (("port", config.port), ("URL", config.url), ("client_id", config.client_id)):
+            if key is None:
+                continue
+            seen = identities[what]
+            if key in seen:
+                raise ConfigError(f"{seen[key]} and {spec.name} have the same {what}: each front end is its own service "
+                                  "(its own service-add, URL and port)")
+            seen[key] = spec.name
+
+
+def validate(path: Path) -> None:
+    """Read configuration and frontend metadata without creating runtime state or clients."""
+    _check_frontends(_read_services(read(path), ServiceConfig.inspect))
 
 
 def prepare(path: Path, state_dir: Path | None, log_calls: bool) -> tuple[list[Front], list[Upstream]]:
     """Every front end and the upstreams they share, checked before anything listens."""
     ferry = read(path)
+    configured = _read_services(ferry, ServiceConfig)
+    _check_frontends([(spec, config.info()) for spec, config in configured])
     upstreams = {backend.name: Upstream(backend) for backend in ferry.backends}
     prepared: list[Front] = []
-    ports: dict[int, str] = {}
-    urls: dict[str, str] = {}
-    clients: dict[str, str] = {}
-
-    def unique(name: str, config: ServiceConfig) -> None:
-        authority = getattr(config, "authority", None)
-        client = authority.client_id if authority is not None else None
-        for seen, what, key in ((ports, "port", config.port), (urls, "URL", config.url), (clients, "client_id", client)):
-            if key is None:
-                continue
-            if key in seen:
-                raise ConfigError(f"{seen[key]} and {name} have the same {what}: each front end is its own service "
-                                  "(its own service-add, URL and port)")
-            seen[key] = name
-
     def calls(name: str) -> CallLog:
         return CallLog((state_dir or default_state_dir("boring-mcp-ferry")) / f"{name}-calls.jsonl"
                        if log_calls else None)
 
     by_name = {backend.name: backend for backend in ferry.backends}
-    for spec in ferry.frontends:
+    for spec, config in configured:
         backend_front = isinstance(spec, Backend)
-        group = "backends" if backend_front else "gateways"
-        assert spec.service is not None
-        config = _service(spec.service, f"{group}.{spec.name}.service")
-        unique(spec.name, config)
         if backend_front:
             server = front(spec, upstreams[spec.name], config, calls(spec.name))
             # Only a front end that registers with a Pond answers the heartbeat with its backend's
@@ -145,7 +157,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         prepared, upstreams = prepare(args.config, args.state_dir, not args.no_call_log)
     except ConfigError as error:
-        print(json.dumps({"status": "refused", "code": "invalid_config", "message": str(error)}), file=sys.stderr)
+        print(json.dumps({"status": "refused", "code": "invalid_request", "message": str(error)}), file=sys.stderr)
         raise SystemExit(2) from None
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     quiet_http_logs()

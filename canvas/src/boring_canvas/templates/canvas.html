@@ -6,9 +6,10 @@
 <title>%%TITLE%%</title>
 
 <!-- Built from the locked frontend dependencies and shipped with the wheel. -->
-<link rel="stylesheet" href="/canvas/assets/editor.css?v=%%ASSET_REVISION%%" />
+<link rel="stylesheet" href="%%CANVAS_BASE%%/assets/editor.css?v=%%ASSET_REVISION%%" />
 <script nonce="%%NONCE%%">
-  window.EXCALIDRAW_ASSET_PATH = "/canvas/assets/";
+  window.__CANVAS_BASE__ = %%CANVAS_BASE_JSON%%;
+  window.EXCALIDRAW_ASSET_PATH = window.__CANVAS_BASE__ + "/assets/";
 </script>
 
 <style>
@@ -47,12 +48,13 @@
 </head>
 <body>
 
-<div id="token-form">
-  <h3>Enter canvas token</h3>
-  <input id="token-input" type="text" placeholder="token" autofocus />
-  <button id="token-submit">Open canvas</button>
-  <p id="token-error"></p>
-</div>
+<form id="token-form">
+  <h3>Open canvas</h3>
+  <label for="token-input">Canvas token</label>
+  <input id="token-input" type="password" required autofocus aria-describedby="token-error" />
+  <button id="token-submit" type="submit">Open canvas</button>
+  <p id="token-error" role="alert" aria-live="polite"></p>
+</form>
 
 <div id="canvas-root">
   <div id="debug-line">booting...</div>
@@ -73,38 +75,52 @@
     document.getElementById("canvas-root").style.display = "block";
   }
 
-  // A link with "#this-is-unsafe-dont-do-this-auth=<token>" (open_url, opt-in on the
-  // server) signs in like the form below. The fragment never reaches the server or its
-  // logs; it is cleared from the address bar before anything else.
+  const tokenInput = document.getElementById("token-input");
+  const tokenSubmit = document.getElementById("token-submit");
+  const tokenError = document.getElementById("token-error");
+  const signIn = async (token) => {
+    if (tokenSubmit.disabled) return;
+    tokenSubmit.disabled = true;
+    tokenError.textContent = "";
+    tokenInput.removeAttribute("aria-invalid");
+    try {
+      const res = await fetch(`${window.__CANVAS_BASE__}/${window.__CANVAS_ID__}/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      if (res.ok) {
+        window.location.reload();
+        return;
+      }
+      if (res.status === 401) {
+        tokenError.textContent = "Invalid token.";
+        tokenInput.setAttribute("aria-invalid", "true");
+      } else {
+        tokenError.textContent = `Could not sign in (HTTP ${res.status}); try again.`;
+      }
+    } catch (error) {
+      tokenError.textContent = "Could not reach Canvas; try again.";
+    } finally {
+      tokenSubmit.disabled = false;
+    }
+    tokenInput.focus();
+  };
+  document.getElementById("token-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    signIn(tokenInput.value);
+  });
+
+  // The opt-in fragment never reaches the server or its logs. Clear it before
+  // exchanging the token, using the same sign-in and errors as the native form.
   {
     const fragment = new URLSearchParams(location.hash.slice(1));
     const linked = fragment.get("this-is-unsafe-dont-do-this-auth");
     if (linked) {
       history.replaceState(null, "", location.pathname + location.search);
-      fetch(`/canvas/${window.__CANVAS_ID__}/session`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: linked }),
-      }).then((res) => {
-        if (res.ok) window.location.reload();
-        else document.getElementById("token-error").textContent = "This link's token is no longer valid.";
-      });
+      signIn(linked);
     }
   }
-
-  document.getElementById("token-submit").addEventListener("click", async () => {
-    const token = document.getElementById("token-input").value;
-    const res = await fetch(`/canvas/${window.__CANVAS_ID__}/session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
-    });
-    if (res.ok) {
-      window.location.reload();
-    } else {
-      document.getElementById("token-error").textContent = "Invalid token.";
-    }
-  });
 </script>
 
 <script nonce="%%NONCE%%" type="module">
@@ -270,7 +286,7 @@
       // nested inside a block -- that was a real bug here, caught by
       // building and actually testing this, not by inspection alone.
       const { ExcalidrawLib, React, createRoot } =
-        await import('/canvas/assets/editor.js?v=%%ASSET_REVISION%%');
+        await import(window.__CANVAS_BASE__ + '/assets/editor.js?v=%%ASSET_REVISION%%');
       log("Excalidraw + React modules loaded OK");
 
       const wrapper = document.getElementById("excalidraw-wrapper");
@@ -291,7 +307,7 @@
       let saving = Promise.resolve(true);
       const postElements = async (elements) => {
         try {
-          const res = await fetch(`/canvas/${window.__CANVAS_ID__}/elements`, {
+          const res = await fetch(`${window.__CANVAS_BASE__}/${window.__CANVAS_ID__}/elements`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(elements),
@@ -333,7 +349,7 @@
       window.addEventListener("pagehide", () => {
         if (pending === null) return;
         try {
-          fetch(`/canvas/${window.__CANVAS_ID__}/elements`, {
+          fetch(`${window.__CANVAS_BASE__}/${window.__CANVAS_ID__}/elements`, {
             method: "POST", keepalive: true,
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(pending),
@@ -377,17 +393,16 @@
       // The rejected "push-on-change" was specifically canvas-to-chat
       // (nothing to wake between turns); this is the opposite direction.
       // 1s: meant for a desktop browser, not a phone on battery.
-      let lastVersion = null;
+      let lastVersion = window.__SCENE_VERSION__;
       setInterval(async () => {
         try {
-          const res = await fetch(`/canvas/${window.__CANVAS_ID__}/version`);
+          const res = await fetch(`${window.__CANVAS_BASE__}/${window.__CANVAS_ID__}/version`);
           if (!res.ok) {
             setProblem("poll", `not syncing: ${await reasonOf(res)}, retrying`);
             return;
           }
           const data = await res.json();
           setProblem("poll", "");
-          if (lastVersion === null) { lastVersion = data.version; return; }
           if (data.version !== lastVersion) {
             // Store the person's pending strokes first; reload only when
             // nothing is left unsaved, otherwise try again next second.

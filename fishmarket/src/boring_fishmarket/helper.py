@@ -121,7 +121,8 @@ class TransferClient:
             outcome = {"refused": Refused, "failed": Failed}.get(data.get("status"))
             if outcome is None:
                 raise RuntimeError("unrecognized transfer control outcome")
-            raise outcome(data["code"], data["message"])
+            details = {key: value for key, value in data.items() if key not in ("status", "code", "message")}
+            raise outcome(data["code"], data["message"], **details)
         return data
 
     async def deposit(self, path):

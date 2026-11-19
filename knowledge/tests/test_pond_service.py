@@ -97,7 +97,7 @@ class Service:
     def __init__(self, tmp_path: Path) -> None:
         self.cp = FakeControlPlane()
         now = int(time.time())
-        good = {"active": True, "aud": OWN_URL, "exp": now + 300, "sub": "pond", "client_id": "control-plane"}
+        good = {"active": True, "aud": OWN_URL, "exp": now + 300, "sub": "pond", "role": "writer", "client_id": "control-plane"}
         self.cp.tokens.update({
             "pond": good, "garden": dict(good, sub="garden"),
             "other-service": dict(good, aud="http://127.0.0.1:18511/mcp"),
@@ -107,11 +107,8 @@ class Service:
         (tmp_path / "secret").write_text(SECRET)
         (tmp_path / "config.json").write_text(json.dumps({
             "url": OWN_URL,
-            "oauth": {"issuer": self.cp.url, "introspection_url": self.cp.url + "/introspect",
-                      "client_id": CLIENT_ID, "secret_file": "secret"},
-            "pond": {"url": self.cp.url, "client_id": CLIENT_ID, "secret_file": "secret"},
-            "access": [{"subject": "pond", "role": "writer", "author": "pond"},
-                       {"subject": "garden", "role": "writer", "author": "garden"}]}))
+            "mode": "crocodile", "crocodile": {"url": self.cp.url,
+                      "client_id": CLIENT_ID, "secret_file": "secret"}}))
         config = ServiceConfig(tmp_path / "config.json")
         self.app = config.app(create_server(Store(str(tmp_path / "notebook.db")), calling_author,
                                             on_discover=self.watchdog.pinged, enforce_access=True, **config.auth))
@@ -158,11 +155,11 @@ def test_the_author_is_the_calling_pond(tmp_path):
     async def scenario() -> None:
         async with Service(tmp_path) as service:
             is_error, entry = await service.result("kb_add", ENTRY, token="pond")
-            assert not is_error and entry["author"] == "pond" and entry["created_by"] == "pond"
+            assert not is_error and json.loads(entry["author"]) == [service.cp.url, "pond"] and entry["created_by"] == entry["author"]
             _, revised = await service.result("kb_revise", {"id": entry["id"], "expected_version": 1,
                                                             "reason": "seen again on Windows",
                                                             "context": "Pond jobs"}, token="garden")
-            assert revised["author"] == "garden" and revised["created_by"] == "pond"
+            assert json.loads(revised["author"]) == [service.cp.url, "garden"] and revised["created_by"] == entry["author"]
             _, found = await service.result("kb_search", {"query": "timeout"}, token="garden")
             assert found["total"] == 1
     run(scenario())

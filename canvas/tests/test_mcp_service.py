@@ -10,6 +10,7 @@ import asyncio
 import base64
 import http.server
 import json
+import shlex
 import tempfile
 import threading
 import time
@@ -31,7 +32,7 @@ from boring_canvas.storage import CanvasStore
 from canvas_fixtures import backdate, legacy_ownerless_canvas
 
 OWN_URL = "http://127.0.0.1:18511/mcp"
-PUBLIC = "https://canvas.example"
+PUBLIC = OWN_URL[:-4]
 CLIENT_ID, SECRET = "canvas-client", "canvas-secret"
 VERSION = "2026-07-28"
 
@@ -220,11 +221,8 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         self.config = Path(self._tmp.name) / "config.json"
         self.config.write_text(json.dumps({
             "url": OWN_URL,
-            "oauth": {"issuer": self.cp.url, "introspection_url": self.cp.url + "/introspect",
-                      "client_id": CLIENT_ID, "secret_file": str(secret)},
-            "pond": {"url": self.cp.url, "client_id": CLIENT_ID, "secret_file": str(secret)},
-            "access": [{"subject": "pondA", "role": "writer", "author": "pondA"},
-                       {"subject": "pondB", "role": "writer", "author": "pondB"}]}))
+            "mode": "crocodile", "crocodile": {"url": self.cp.url,
+                      "client_id": CLIENT_ID, "secret_file": str(secret)}}))
         self.app = self.app_for()
         self.lifespan = Lifespan(self.app)
         await self.lifespan.__aenter__()
@@ -232,7 +230,7 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
             transport=httpx2.ASGITransport(app=self.app, raise_app_exceptions=False),
             base_url="http://127.0.0.1:18511")
         self.cp.tokens["good"] = {"active": True, "aud": OWN_URL, "exp": int(time.time()) + 300,
-                                  "sub": "pondA", "client_id": "control-plane"}
+                                  "sub": "pondA", "role": "writer", "client_id": "control-plane"}
         self.cp.tokens["goodB"] = dict(self.cp.tokens["good"], sub="pondB")
 
     async def test_published_tool_list_budget(self) -> None:
@@ -244,7 +242,9 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
 
     def app_for(self, unsafe_url_auth: bool = False) -> Any:
         config = ServiceConfig(self.config)
-        return config.app(build_server(self.store, PUBLIC, config.auth, self.watchdog.pinged, unsafe_url_auth))
+        from boring_canvas.server import App
+        config.watchdog = self.watchdog
+        return App(self.store, config, unsafe_url_auth)
 
     async def asyncTearDown(self) -> None:
         await self.client.aclose()
@@ -290,9 +290,12 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
     async def tool_description(self, tool: str) -> str:
         return next(t["description"] for t in await self.tools() if t["name"] == tool)
 
+    def owner(self, subject: str) -> str:
+        return json.dumps([self.cp.url, subject], separators=(",", ":"))
+
     def named(self, owner: str, name: str) -> tuple[str, str]:
         """(canvas_id, token) of a canvas created as `owner` would over MCP."""
-        return self.store.create_named(owner, name)
+        return self.store.create_named(self.owner(owner), name)
 
     # ---- the tool surface: names, no ids or tokens
 
@@ -321,9 +324,10 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         """Safe mode: no token reaches the agent; the answer names the operator's command
         that issues one (the command itself is exercised in test_admin)."""
         created = await self.call_ok("create_canvas", {"name": "canvas1"})
-        canvas_id = self.store.find_named("pondA", "canvas1").canvas_id
+        canvas_id = self.store.find_named(self.owner("pondA"), "canvas1").canvas_id
         self.assertEqual(created, {"name": "canvas1", "url": f"{PUBLIC}/canvas/{canvas_id}",
-                                   "token_from_operator": "sudo boring-canvas-admin token canvas1 --owner pondA"})
+                                   "token_from_operator": "sudo boring-canvas-admin token canvas1 --owner " +
+                                   shlex.quote(self.owner("pondA"))})
         description = await self.tool_description("create_canvas")
         self.assertNotIn("open_url", description)
         self.assertIn("ask the operator of the canvas server for the token", description)
@@ -344,7 +348,7 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await self.client.aclose()
                 self.client = plain
-        canvas_id = self.store.find_named("pondA", "canvas1").canvas_id
+        canvas_id = self.store.find_named(self.owner("pondA"), "canvas1").canvas_id
         self.assertEqual(set(created), {"name", "url", "open_url"})
         prefix = f"{PUBLIC}/canvas/{canvas_id}#this-is-unsafe-dont-do-this-auth="  # the token in the fragment
         self.assertTrue(created["open_url"].startswith(prefix), created)
@@ -368,7 +372,7 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
                                                              "the pushed drawing yet (or it was deleted)"})
         self.assertEqual(await self.call_ok("get_edits", {"name": "canvas1"}),
                          {"edits": [], "omitted": 0})
-        self.assertIn(svg[:20], self.store.find_named("pondA", "canvas1").scene_svg)
+        self.assertIn(svg[:20], self.store.find_named(self.owner("pondA"), "canvas1").scene_svg)
 
     async def test_introspection_request_shape_and_cache(self) -> None:
         await self.call_ok("create_canvas", {"name": "one"})
@@ -391,13 +395,13 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_delete_canvas_only_the_callers_own(self) -> None:
         await self.call_ok("create_canvas", {"name": "mine"})
         await self.call_ok("create_canvas", {"name": "mine"}, token="goodB")
-        mine_a = self.store.find_named("pondA", "mine").canvas_id
-        mine_b = self.store.find_named("pondB", "mine").canvas_id
+        mine_a = self.store.find_named(self.owner("pondA"), "mine").canvas_id
+        mine_b = self.store.find_named(self.owner("pondB"), "mine").canvas_id
         # Another Pond's canvas of the same name is not found, and stays.
         self.assertEqual(await self.call_ok("delete_canvas", {"name": "mine"}), {"deleted": True})
         self.assertEqual(len(self.store.list_canvases()), 1)
         self.assertEqual([c["canvas_id"] for c in self.store.list_canvases()], [mine_b])
-        self.assertEqual(self.store.find_named("pondB", "mine").canvas_id, mine_b)
+        self.assertEqual(self.store.find_named(self.owner("pondB"), "mine").canvas_id, mine_b)
         self.assertEqual((await self.call_refused("delete_canvas", {"name": "mine"}))["code"],
                          "not_found")
         self.assertEqual((await self.call_refused("push_scene", {"name": "mine", "svg": "<svg/>"}))["code"],
@@ -440,8 +444,8 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         svg_b = '<svg xmlns="http://www.w3.org/2000/svg"><rect id="from-b"/></svg>'
         await self.call_ok("push_scene", {"name": "canvas1", "svg": svg_a}, token="good")
         await self.call_ok("push_scene", {"name": "canvas1", "svg": svg_b}, token="goodB")
-        self.assertIn("from-a", self.store.find_named("pondA", "canvas1").scene_svg)
-        self.assertIn("from-b", self.store.find_named("pondB", "canvas1").scene_svg)
+        self.assertIn("from-a", self.store.find_named(self.owner("pondA"), "canvas1").scene_svg)
+        self.assertIn("from-b", self.store.find_named(self.owner("pondB"), "canvas1").scene_svg)
         # pondA's own canvas, invisible to pondB: not_found, nothing written
         await self.call_ok("create_canvas", {"name": "only-a"}, token="good")
         for tool, args in (("push_scene", {"name": "only-a", "svg": svg_b}),
@@ -450,7 +454,7 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(tool=tool):
                 self.assertEqual((await self.call_refused(tool, args, token="goodB"))["code"],
                                  "not_found")
-        self.assertIsNone(self.store.find_named("pondA", "only-a").scene_svg)
+        self.assertIsNone(self.store.find_named(self.owner("pondA"), "only-a").scene_svg)
         listed_b = await self.call_ok("list_canvases", {}, token="goodB")
         self.assertEqual([c["url"] for c in listed_b["canvases"]], [b["url"]])
 
@@ -467,7 +471,7 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_list_canvases_shows_expiry_and_the_descriptions_say_so(self) -> None:
         await self.call_ok("create_canvas", {"name": "canvas1"})
-        created_s = self.store.find_named("pondA", "canvas1").created_s
+        created_s = self.store.find_named(self.owner("pondA"), "canvas1").created_s
         entry = (await self.call_ok("list_canvases", {}))["canvases"][0]
         fmt = "%Y-%m-%dT%H:%M:%SZ"
         created = datetime.strptime(entry["created"], fmt).replace(tzinfo=timezone.utc)
@@ -490,7 +494,7 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_expiry_frees_the_name(self) -> None:
         old = await self.call_ok("create_canvas", {"name": "canvas1"})
-        old_id = self.store.find_named("pondA", "canvas1").canvas_id
+        old_id = self.store.find_named(self.owner("pondA"), "canvas1").canvas_id
         backdate(self.store, old_id, (self.store.max_age_days + 1) * 86400)
         new = await self.call_ok("create_canvas", {"name": "canvas1"})  # sweeps first
         self.assertNotEqual(new["url"], old["url"])
@@ -618,7 +622,7 @@ class McpServiceTests(unittest.IsolatedAsyncioTestCase):
         # Neither refusal left a canvas behind: only the first exists, in the listing and the store.
         listed = (await self.call_ok("list_canvases", {}))["canvases"]
         self.assertEqual([c["name"] for c in listed], ["one"])
-        one = self.store.find_named("pondA", "one").canvas_id
+        one = self.store.find_named(self.owner("pondA"), "one").canvas_id
         self.assertEqual([c["canvas_id"] for c in self.store.list_canvases()], [one])
 
     # ---- tokens that must not pass

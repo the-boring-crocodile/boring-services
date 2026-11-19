@@ -1,236 +1,140 @@
-"""Canvas HTTP request adapter with explicit store and deployment settings."""
+"""Canvas browser routes on the service's single ASGI listener."""
 from __future__ import annotations
-import http.cookies
-import http.server
+
+from urllib.parse import urlsplit
+import asyncio
 import json
-import secrets
+
+BODY_READ_SECONDS = 30
 import mimetypes
-from .storage import CanvasNotFound, CanvasStore, InvalidElements, InvalidToken
-from .web_views import (render_page, page_csp, without_query, _TEMPLATE_PATH, ASSETS, _ROUTE_CANVAS, _ROUTE_SESSION, _ROUTE_VERSION, _ROUTE_ELEMENTS, COOKIE_NAME, MAX_BODY_BYTES, _CONTENT_LENGTH)
+import secrets
 
-class CanvasHandler(http.server.BaseHTTPRequestHandler):
-    store: CanvasStore
-    public_base_url: str | None
-    server_version = "boring-canvas/0.1"
+from starlette.responses import Response, JSONResponse
+from starlette.concurrency import run_in_threadpool
+from .storage import CanvasNotFound, InvalidElements, InvalidToken
+from .web_views import (render_page, page_csp, _TEMPLATE_PATH, ASSETS,
+    _ROUTE_CANVAS, _ROUTE_SESSION, _ROUTE_VERSION, _ROUTE_ELEMENTS,
+    COOKIE_NAME, MAX_BODY_BYTES, _CONTENT_LENGTH)
 
-    def log_message(self, fmt: str, *args: object) -> None:
-        print("%s - %s" % (self.address_string(), without_query(fmt % args)))
 
-    def _base_url(self) -> str:
-        """Canvas's own belief about its externally-visible address.
+class BodyRefused(Exception):
+    def __init__(self, status, message):
+        self.response = JSONResponse({"error": message}, status_code=status)
 
-        The one affected owns the information: this is
-        canvas's own deploy-time setting, not something a caller (the
-        MCP) has to know or compose -- same reasoning as
-        Nextcloud's own overwrite.cli.url. When set explicitly
-        (--public-base-url), that value wins outright, since it's the
-        one case where Caddy/a domain sits in front and the request's
-        own Host header can't be trusted to reflect that. Otherwise
-        falls back to the incoming request's Host header -- correct for
-        tonight's LAN testing, where --host is usually 0.0.0.0 (not
-        itself a connectable address) and the right base genuinely
-        depends on which interface someone actually connected through.
-        """
-        if self.public_base_url:
-            return self.public_base_url
-        host = self.headers.get("Host", self.server.server_address[0])
-        return f"http://{host}"
 
-    def _send_json(self, status: int, payload: dict) -> None:
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+async def text_body(request):
+    raw = request.headers.get("content-length")
+    if raw is None or "transfer-encoding" in request.headers:
+        raise BodyRefused(411, "Content-Length required (chunked bodies are not supported)")
+    if not _CONTENT_LENGTH.fullmatch(raw.strip()):
+        raise BodyRefused(400, f"invalid Content-Length {raw!r}")
+    length = int(raw)
+    if length > MAX_BODY_BYTES:
+        raise BodyRefused(413, f"body of {length} bytes is over the limit of {MAX_BODY_BYTES} bytes")
+    body = bytearray()
+    try:
+        async with asyncio.timeout(BODY_READ_SECONDS):
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > length:
+                    raise BodyRefused(400, "body exceeds Content-Length")
+                body.extend(chunk)
+    except TimeoutError:
+        raise BodyRefused(408, "body read timed out") from None
+    if len(body) != length:
+        raise BodyRefused(400, "body shorter than Content-Length")
+    try:
+        return body.decode("utf-8")
+    except UnicodeDecodeError:
+        raise BodyRefused(400, "body must be UTF-8") from None
 
-    def _read_body(self) -> bytes | None:
-        """The request body, or None once a refusal has been sent: 411
-        without Content-Length (chunked bodies are not supported), 400
-        for one that is not a number, 413 above MAX_BODY_BYTES. A refused
-        body is never read; the connection is closed instead."""
-        raw = self.headers.get("Content-Length")
-        if raw is None or "Transfer-Encoding" in self.headers:
-            self._refuse_body(411, "Content-Length required (chunked bodies "
-                                   "are not supported)")
-            return None
-        if not _CONTENT_LENGTH.fullmatch(raw.strip()):
-            self._refuse_body(400, f"invalid Content-Length {raw!r}")
-            return None
-        length = int(raw)
-        if length > MAX_BODY_BYTES:
-            self._refuse_body(413, f"body of {length} bytes is over the limit "
-                                   f"of {MAX_BODY_BYTES} bytes")
-            return None
-        return self.rfile.read(length) if length else b""
 
-    def _read_text_body(self) -> str | None:
-        raw = self._read_body()
-        if raw is None:
-            return None
+class CanvasWeb:
+    def __init__(self, store, public_base_url):
+        self.store = store
+        self.public_base_url = public_base_url
+        self.prefix = urlsplit(public_base_url).path.rstrip("/")
+
+    async def __call__(self, request):
         try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError:
-            self._send_json(400, {"error": "body must be UTF-8"})
-            return None
-
-    def _refuse_body(self, status: int, message: str) -> None:
-        # The unread body would otherwise be parsed as the next request.
-        self.close_connection = True
-        self._send_json(status, {"error": message})
-
-    def _cookie_token(self) -> str | None:
-        raw = self.headers.get("Cookie")
-        if not raw:
-            return None
-        jar: http.cookies.SimpleCookie = http.cookies.SimpleCookie()
-        jar.load(raw)
-        morsel = jar.get(COOKIE_NAME)
-        return morsel.value if morsel else None
-
-    def _set_session_cookie_header(self, canvas_id: str, token: str) -> None:
-        cookie: http.cookies.SimpleCookie = http.cookies.SimpleCookie()
-        cookie[COOKIE_NAME] = token
-        cookie[COOKIE_NAME]["path"] = f"/canvas/{canvas_id}"
-        cookie[COOKIE_NAME]["httponly"] = True
-        # SameSite=Lax: the session cookie only needs to ride along on
-        # top-level navigation to /canvas/<id> (typing/clicking the
-        # link) and same-site requests from canvas.html's own JS; it
-        # has no business being attached to a cross-site POST/fetch,
-        # so Lax closes that off without breaking the normal flow.
-        cookie[COOKIE_NAME]["samesite"] = "Lax"
-        # Secure: canvas itself always speaks plain HTTP (TLS is
-        # Caddy's job, terminated in front of it -- see _base_url()'s
-        # docstring), so "are we HTTPS" isn't something this process
-        # can read off its own socket. _base_url() is already the
-        # single source of truth for canvas's externally-visible
-        # scheme (explicit --public-base-url when given, else the
-        # request's own Host header over plain http://), so asking it
-        # is more honest than re-deriving the scheme here. This was
-        # genuinely open (no Secure flag) during LAN-only testing;
-        # Behind a TLS proxy --public-base-url is https://, and this
-        # turns on.
-        if self._base_url().startswith("https://"):
-            cookie[COOKIE_NAME]["secure"] = True
-        self.send_header("Set-Cookie", cookie[COOKIE_NAME].OutputString())
-
-    # ---- POST /canvas/<id>/session ----
-    def _create_session(self, canvas_id: str) -> None:
-        body = self._read_text_body()
-        if body is None:
-            return
-        try:
-            payload = json.loads(body or "{}")
-        except json.JSONDecodeError:
-            self._send_json(400, {"error": "invalid JSON body"})
-            return
-        if not isinstance(payload, dict):
-            self._send_json(400, {"error": "body must be a JSON object"})
-            return
-        token = payload.get("token")
-        if not isinstance(token, str) or not token or not self.store.verify_token(canvas_id, token):
-            self._send_json(401, {"error": "invalid token"})
-            return
-        body = json.dumps({"ok": True}).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self._set_session_cookie_header(canvas_id, token)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    # ---- GET /canvas/<id> ----
-    def _serve_page(self, canvas_id: str) -> None:
-        try:
-            canvas = self.store.read(canvas_id)
+            path = request.url.path
+            if self.prefix:
+                if not path.startswith(self.prefix + "/"):
+                    return JSONResponse({"error": "not found"}, status_code=404)
+                path = path[len(self.prefix):]
+            if request.method == "GET":
+                if path.startswith("/canvas/assets/"):
+                    return await run_in_threadpool(self.asset, path[len("/canvas/assets/"):])
+                match = _ROUTE_CANVAS.fullmatch(path)
+                if match:
+                    return await run_in_threadpool(self.page, match[1], request.cookies.get(COOKIE_NAME))
+                match = _ROUTE_VERSION.fullmatch(path)
+                if match:
+                    return await run_in_threadpool(self.version, match[1], request.cookies.get(COOKIE_NAME))
+            if request.method == "POST":
+                match = _ROUTE_SESSION.fullmatch(path)
+                if match:
+                    return await self.session(request, match[1])
+                match = _ROUTE_ELEMENTS.fullmatch(path)
+                if match:
+                    return await self.elements(request, match[1])
+            return JSONResponse({"error": "not found"}, status_code=404)
         except CanvasNotFound:
-            self._send_json(404, {"error": "no such canvas"})
-            return
-        token = self._cookie_token()
+            return JSONResponse({"error": "no such canvas"}, status_code=404)
+        except BodyRefused as error:
+            # Close instead of attempting to consume a rejected/unbounded body.
+            error.response.headers["connection"] = "close"
+            return error.response
+
+    async def session(self, request, canvas_id):
+        text = await text_body(request)
+        try:
+            payload = json.loads(text or "{}")
+        except json.JSONDecodeError:
+            return JSONResponse({"error": "invalid JSON body"}, status_code=400)
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+        token = payload.get("token")
+        if not isinstance(token, str) or not token or not await run_in_threadpool(self.store.verify_token, canvas_id, token):
+            return JSONResponse({"error": "invalid token"}, status_code=401)
+        response = JSONResponse({"ok": True})
+        response.set_cookie(COOKIE_NAME, token, path=f"{self.prefix}/canvas/{canvas_id}",
+            httponly=True, samesite="Lax", secure=self.public_base_url.startswith("https://"))
+        return response
+
+    def page(self, canvas_id, token):
+        canvas = self.store.read(canvas_id)
         authed = bool(token) and self.store.verify_token(canvas_id, token)
         nonce = secrets.token_urlsafe(18)
-        html = render_page(
-            _TEMPLATE_PATH.read_text(encoding="utf-8"),
-            name=canvas.name,
-            canvas_id=canvas_id,
-            authed=authed,
-            scene_svg=canvas.scene_svg,
-            elements_json=canvas.elements_json,
-            nonce=nonce,
-        )
-        body = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        # The page loads its scripts from a CDN: no Referer carrying a
-        # canvas URL (with or without query) to third parties.
-        self.send_header("Referrer-Policy", "no-referrer")
-        # Only our own nonce'd scripts and the pinned CDN run; the page
-        # is never framed. Excalidraw needs inline styles,
-        # data:/blob: images and its fonts from the CDN.
-        self.send_header("Content-Security-Policy", page_csp(nonce))
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        body = render_page(_TEMPLATE_PATH.read_text(encoding="utf-8"),
+            name=canvas.name, canvas_id=canvas_id, authed=authed,
+            scene_svg=canvas.scene_svg, elements_json=canvas.elements_json, nonce=nonce,
+            base_path=self.prefix)
+        return Response(body, media_type="text/html", headers={
+            "Referrer-Policy": "no-referrer", "Content-Security-Policy": page_csp(nonce),
+            "X-Content-Type-Options": "nosniff"})
 
-    # ---- GET /canvas/<id>/version ----
-    def _get_version(self, canvas_id: str) -> None:
-        token = self._cookie_token()
-        try:
-            authed = bool(token) and self.store.verify_token(canvas_id, token)
-        except CanvasNotFound:
-            self._send_json(404, {"error": "no such canvas"})
-            return
-        if not authed:
-            self._send_json(401, {"error": "not authenticated"})
-            return
-        self._send_json(200, {"version": self.store.scene_version(canvas_id)})
+    def version(self, canvas_id, token):
+        if not token or not self.store.verify_token(canvas_id, token):
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
+        return JSONResponse({"version": self.store.scene_version(canvas_id)})
 
-    # ---- POST /canvas/<id>/elements (cookie -- browser saves itself) ----
-    def _post_elements(self, canvas_id: str) -> None:
-        token = self._cookie_token()
+    async def elements(self, request, canvas_id):
+        token = request.cookies.get(COOKIE_NAME)
         if not token:
-            self._send_json(401, {"error": "not authenticated"})
-            return
-        try:  # the token is checked before an up-to-8-MiB body is read
-            if not self.store.verify_token(canvas_id, token):
-                self._send_json(401, {"error": "invalid token"})
-                return
-        except CanvasNotFound:
-            self._send_json(404, {"error": "no such canvas"})
-            return
-        body = self._read_text_body()
-        if body is None:
-            return
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
+        if not await run_in_threadpool(self.store.verify_token, canvas_id, token):
+            return JSONResponse({"error": "invalid token"}, status_code=401)
+        # Authenticate before receiving an up-to-8MiB body.
+        body = await text_body(request)
         try:
-            self.store.write_elements(canvas_id, token, body)
-        except CanvasNotFound:
-            self._send_json(404, {"error": "no such canvas"})
-            return
+            await run_in_threadpool(self.store.write_elements, canvas_id, token, body)
         except InvalidToken:
-            self._send_json(401, {"error": "invalid token"})
-            return
-        except InvalidElements as exc:
-            self._send_json(400, {"error": str(exc)})
-            return
-        self._send_json(200, {"ok": True})
+            return JSONResponse({"error": "invalid token"}, status_code=401)
+        except InvalidElements as error:
+            return JSONResponse({"error": str(error)}, status_code=400)
+        return JSONResponse({"ok": True})
 
-    def _answer(self, route) -> None:
-        """Run a route; a canvas deleted between route match and read (or an
-        unknown id on a route that does not check itself, /session) is 404
-        like everywhere else."""
-        try:
-            route()
-        except CanvasNotFound:
-            self._send_json(404, {"error": "no such canvas"})
-
-    def do_GET(self) -> None:
-        self._answer(self._route_get)
-
-    def do_POST(self) -> None:
-        self._answer(self._route_post)
-
-    def _asset(self, name: str) -> None:
+    def asset(self, name):
         try:
             path = (ASSETS / name).resolve()
             path.relative_to(ASSETS.resolve())
@@ -238,53 +142,6 @@ class CanvasHandler(http.server.BaseHTTPRequestHandler):
                 raise ValueError("not an asset")
             body = path.read_bytes()
         except (OSError, ValueError):
-            self._send_json(404, {"error": "not found"})
-            return
-        kind = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        self.send_response(200)
-        self.send_header("Content-Type", kind)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _route_get(self) -> None:
-        # self.path carries the query string verbatim (e.g.
-        # "/canvas/<id>?token=...") -- every route regex below assumes
-        # a bare path with no query string, so routing has to match
-        # against the path component alone. A real bug, found live
-        # the moment ?token=... existed for the first time tonight:
-        # every route silently 404'd, since the regexes' trailing $
-        # anchor failed the instant anything followed the id. Query
-        # params that ARE needed (the unsafe-url-auth token) are
-        # parsed separately, from the full self.path, inside the
-        # handler that actually needs them (_serve_page).
-        path = self.path.split("?", 1)[0]
-        if path.startswith("/canvas/assets/"):
-            self._asset(path[len("/canvas/assets/"):])
-            return
-        match = _ROUTE_VERSION.match(path)
-        if match:
-            self._get_version(match.group(1))
-            return
-        match = _ROUTE_CANVAS.match(path)
-        if match:
-            self._serve_page(match.group(1))
-            return
-        self._send_json(404, {"error": "not found"})
-
-    def _route_post(self) -> None:
-        path = self.path.split("?", 1)[0]  # same reasoning as _route_get
-        # No route creates a canvas: canvases are created over MCP only, by
-        # a verified caller. POST /canvas is an
-        # unknown route like any other.
-        match = _ROUTE_SESSION.match(path)
-        if match:
-            self._create_session(match.group(1))
-            return
-        match = _ROUTE_ELEMENTS.match(path)
-        if match:
-            self._post_elements(match.group(1))
-            return
-        self._send_json(404, {"error": "not found"})
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return Response(body, media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+            headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"})

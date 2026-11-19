@@ -364,7 +364,7 @@ class Store:
         with self.lock:
             row = self._row(transfer_id)
             if not self._live(row) or row["state"] != "uploading":
-                raise Failed("expired", "upload expired before publication")
+                raise Failed("stale", "upload is no longer active before publication")
             if row["expected_size"] is not None and (
                 size != row["expected_size"] or sha != row["expected_sha"]
             ):

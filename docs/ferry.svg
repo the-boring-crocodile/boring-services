@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="694pt" height="655pt" viewBox="0 0 694 655">
 <rect x="0" y="0" width="694" height="655" fill="#ffffff"/>
 <text x="20.0" y="36.0" font-family="Helvetica,Arial,sans-serif" font-size="18" font-weight="bold" fill="#111111" xml:space="preserve">Ferry: someone else's MCP server, behind a door</text>
-<text x="20.0" y="56.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Container view · MCP Ferry 0.1.4</text>
+<text x="20.0" y="56.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Container view · MCP Ferry</text>
 <text x="20.0" y="72.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Servers you did not write stay as they are, on a private network; each front end signs callers in.</text>
 <g class="cluster"><rect x="6" y="240" width="664" height="117" fill="none" stroke="#929a96" stroke-width="1"/>
 <text x="196.0" y="347.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Ferry · one container</text>

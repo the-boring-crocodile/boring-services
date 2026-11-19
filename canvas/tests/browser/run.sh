@@ -9,7 +9,14 @@
 set -euo pipefail
 DIR=$1; PY=$2; REPO=$(cd "$(dirname "$0")/../.." && pwd); PORT=${PORT:-18592}
 STATE=$(mktemp -d); trap 'kill $SRV 2>/dev/null; rm -rf "$STATE"' EXIT
-(cd "$REPO" && PYTHONPATH=src exec "$PY" -m boring_canvas.server --state-dir "$STATE" --host 127.0.0.1 --port "$PORT" --unsafe-url-auth >"$STATE/server.log" 2>&1) & SRV=$!
+"$PY" - "$STATE" "$PORT" <<'PY'
+import json, pathlib, sys
+folder, port = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+(folder / "keys.json").write_text('{"issuer":"key:browser-fixture","keys":[]}')
+(folder / "config.json").write_text(json.dumps({"url":f"http://127.0.0.1:{port}/mcp",
+    "port":port, "mode":"keys", "keys":{"file":"keys.json"}}))
+PY
+(cd "$REPO" && PYTHONPATH=src exec "$PY" -m boring_canvas.server --config "$STATE/config.json" --state-dir "$STATE" --unsafe-url-auth >"$STATE/server.log" 2>&1) & SRV=$!
 sleep 2
 # Each check gets its own canvas in CANVAS ({canvas_id, token}); no web route
 # creates one or takes a drawing (those are MCP tools), so the checks use the

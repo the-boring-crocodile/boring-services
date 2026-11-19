@@ -44,6 +44,7 @@ import json
 import logging
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,13 @@ UPSTREAM_KEYS = {"url", "url_file", "headers_file", "timeout_seconds"}
 HEADER_NAME = re.compile(r"[A-Za-z0-9-]{1,64}\Z")
 FORBIDDEN_HEADERS = {"host", "content-length", "content-type", "accept", "mcp-protocol-version",
                      "mcp-session-id", "mcp-method", "transfer-encoding", "connection"}
+
+
+TextReader = Callable[[Path, str], str]
+
+
+def _read_text(path: Path, encoding: str) -> str:
+    return path.read_text(encoding=encoding)
 
 
 class ConfigError(ValueError):
@@ -97,7 +105,7 @@ def _url(value: str, where: str) -> str:
     return value
 
 
-def _upstream(config: Path, name: str, spec: Any) -> tuple[str, dict[str, str], float | None]:
+def _upstream(config: Path, name: str, spec: Any, read_text: TextReader) -> tuple[str, dict[str, str], float | None]:
     where = f"backends.{name}.upstream"
     if not isinstance(spec, dict) or set(spec) - UPSTREAM_KEYS or ("url" in spec) == ("url_file" in spec):
         raise ConfigError(f"{where}: exactly one of url or url_file, optional headers_file and timeout_seconds")
@@ -107,14 +115,14 @@ def _upstream(config: Path, name: str, spec: Any) -> tuple[str, dict[str, str], 
         url = spec["url"]
     else:
         try:
-            url = _file(config, spec["url_file"], f"{where}.url_file").read_text(encoding="utf-8").strip()
+            url = read_text(_file(config, spec["url_file"], f"{where}.url_file"), "utf-8").strip()
         except OSError as error:
             raise ConfigError(f"{where}.url_file cannot be read ({type(error).__name__})") from None
     url = _url(url, where)
     headers: dict[str, str] = {}
     if "headers_file" in spec:
         try:
-            data = json.loads(_file(config, spec["headers_file"], f"{where}.headers_file").read_text(encoding="utf-8"))
+            data = json.loads(read_text(_file(config, spec["headers_file"], f"{where}.headers_file"), "utf-8"))
         except (OSError, ValueError) as error:
             raise ConfigError(f"{where}.headers_file is not readable JSON ({type(error).__name__})") from None
         if (not isinstance(data, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in data.items())
@@ -160,12 +168,12 @@ class Ferry:
         return [b for b in self.backends if b.service is not None] + list(self.gateways)
 
 
-def _guide(config: Path, name: str, value: Any) -> str | None:
+def _guide(config: Path, name: str, value: Any, read_text: TextReader) -> str | None:
     """The guide's text. A guide that cannot be read is left out with a warning: a renamed handbook page
     must not keep the whole gateway, and every backend behind it, from starting."""
     where = f"backends.{name}.guide_file"
     try:
-        text = _file(config, value, where).read_text(encoding="utf-8-sig")
+        text = read_text(_file(config, value, where), "utf-8-sig")
     except OSError as error:
         logging.getLogger(__name__).warning("%s cannot be read (%s); serving without a guide", where,
                                             type(error).__name__)
@@ -175,10 +183,14 @@ def _guide(config: Path, name: str, value: Any) -> str | None:
     return text
 
 
-def read(path: Path) -> Ferry:
-    """The backends and gateways of a ferry configuration, checked; ConfigError when anything is off."""
+def read(path: Path, *, read_text: TextReader = _read_text) -> Ferry:
+    """Parse with the caller's file reader; runtime defaults to normal Path reads.
+
+    A root installer supplies its own checked reader. Its admission refusals
+    propagate, including for an optional guide; normal missing-guide warnings stay.
+    """
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(read_text(path, "utf-8"))
     except (OSError, ValueError) as error:
         raise ConfigError(f"{path} is not readable JSON ({type(error).__name__})") from None
     if (not isinstance(data, dict) or "backends" not in data or set(data) - KEYS
@@ -191,10 +203,10 @@ def read(path: Path) -> Ferry:
             raise ConfigError(f"backend name {name!r}: lowercase letters, digits and hyphens, as Pond services")
         if not isinstance(spec, dict) or "upstream" not in spec or set(spec) - BACKEND_KEYS:
             raise ConfigError(f"backends.{name}: upstream, optional service, tools and guide_file")
-        url, headers, timeout = _upstream(path, name, spec["upstream"])
+        url, headers, timeout = _upstream(path, name, spec["upstream"], read_text)
         allow, deny = _tools(name, spec.get("tools"))
         service = _file(path, spec["service"], f"backends.{name}.service") if "service" in spec else None
-        guide = _guide(path, name, spec["guide_file"]) if "guide_file" in spec else None
+        guide = _guide(path, name, spec["guide_file"], read_text) if "guide_file" in spec else None
         backends.append(Backend(name, service, url, headers, timeout, allow, deny, guide))
     gateways = []
     spec_all = data.get("gateways", {})

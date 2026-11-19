@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="680pt" height="805pt" viewBox="0 0 680 805">
 <rect x="0" y="0" width="680" height="805" fill="#ffffff"/>
 <text x="20.0" y="36.0" font-family="Helvetica,Arial,sans-serif" font-size="18" font-weight="bold" fill="#111111" xml:space="preserve">Fishmarket: one file, one link, gone when done</text>
-<text x="20.0" y="56.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Container view · Fishmarket 0.1.14</text>
+<text x="20.0" y="56.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Container view · Fishmarket</text>
 <text x="20.0" y="72.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Handovers between an agent's machine and a person's browser. The bytes never go through MCP.</text>
 <g class="edge"><title>agent->server</title><path fill="none" stroke="#587b96" stroke-width="1.4" d="M165.3,174.0 L270.8,248.8"/><polygon fill="#587b96" stroke="#587b96" points="278.1,254.0 273.1,245.5 268.4,252.1"/></g>
 <g class="edge"><title>agent->helper</title><path fill="none" stroke="#9b784b" stroke-dasharray="1.5,4" stroke-linecap="round" stroke-width="2" d="M116.0,174.0 L116.0,245.0"/><polygon fill="#9b784b" stroke="#9b784b" points="116.0,254.0 120.0,245.0 112.0,245.0"/></g>
