@@ -62,6 +62,10 @@ Start: `boring-sourcecache-d365 serve --config config.json --db snapshot.db`
 (`--help` lists options). Configuration: [CONFIGURATION](../docs/CONFIGURATION.md);
 install (`--index FILE`): [README](../README.md#installing-on-linux).
 
+On Windows, [pondNT's separate index build](https://github.com/the-boring-crocodile/boring-pondnt/blob/main/docs/INSTALL.md#5-the-source-index-once-per-box)
+creates the snapshot first. Its installer only wires an existing `-Index`;
+it does not scan for source or build an index during setup.
+
 ## Building a snapshot
 
 Building is a local administrator operation, never an MCP tool:

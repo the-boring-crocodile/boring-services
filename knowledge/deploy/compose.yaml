@@ -1,11 +1,13 @@
 # boring-knowledge: the template a first install turns into HOME/compose.yaml
 # (deploy/install.py). From then on that file is the operator's: install and
-# deploy never rewrite it; the deploy changes only HOME/.env (BORING_IMAGE).
+# deploy never rewrite it; the deploy changes only HOME/boring-image.env (BORING_IMAGE; pass --env-file boring-image.env).
 # @UID@:@GID@ are the service account's, as the OS assigned them.
 
 services:
   knowledge:
     image: ${BORING_IMAGE}
+    environment:
+      BORING_SERVICE_LISTENERS: '{"/run/config/config.json":{"bind":"0.0.0.0","port":18512}}'
     user: "@UID@:@GID@"
     restart: unless-stopped
     # Everything Knowledge writes is under /data/state (the notebook with its

@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="680pt" height="619pt" viewBox="0 0 680 619">
 <rect x="0" y="0" width="680" height="619" fill="#ffffff"/>
 <text x="20.0" y="36.0" font-family="Helvetica,Arial,sans-serif" font-size="18" font-weight="bold" fill="#111111" xml:space="preserve">Knowledge: a notebook agents keep for each other</text>
-<text x="20.0" y="56.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Container view · Knowledge 0.2.15</text>
+<text x="20.0" y="56.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Container view · Knowledge</text>
 <text x="20.0" y="72.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">What one agent learned the hard way, so the next does not have to. Not the Pond's memory.</text>
 <g class="edge"><title>pond->global</title><path fill="none" stroke="#587b96" stroke-width="1.4" d="M168.7,174.0 L266.5,239.0"/><polygon fill="#587b96" stroke="#587b96" points="274.0,244.0 268.8,235.7 264.3,242.4"/></g>
 <g class="edge"><title>pirate->global</title><path fill="none" stroke="#587b96" stroke-width="1.4" d="M338.0,174.0 L338.0,235.0"/><polygon fill="#587b96" stroke="#587b96" points="338.0,244.0 342.0,235.0 334.0,235.0"/></g>

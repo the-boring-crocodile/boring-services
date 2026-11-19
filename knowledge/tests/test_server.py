@@ -67,7 +67,7 @@ def test_revise_retire_and_history_through_tools(server, tmp_path):
     assert revised["version"] == 2
     is_error, stale = call(server, "kb_revise", {"id": entry["id"], "expected_version": 1, "reason": "late",
                                                  "body": "Third."})
-    assert is_error and stale["code"] == "stale" and stale["details"]["current_version"] == 2
+    assert is_error and stale["code"] == "stale" and stale["current_version"] == 2
     _, retired = call(server, "kb_retire", {"id": entry["id"], "expected_version": 2, "reason": "obsolete"})
     assert retired["retired"]
     _, full = call(server, "kb_get", {"id": entry["id"], "history": True})

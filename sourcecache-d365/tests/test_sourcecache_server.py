@@ -77,7 +77,7 @@ def test_refusals_carry_codes(indexes):
     is_error, data = call(server, "source_search", {"query": "ab"})
     assert is_error and data["code"] == "invalid_request"
     is_error, data = call(server, "source_info", {"index": "nope"})
-    assert is_error and data["code"] == "not_found" and data["details"]["available"] == ["d365-synthetic"]
+    assert is_error and data["code"] == "not_found" and data["available"] == ["d365-synthetic"]
 
 
 def test_a_lone_server_signs_claude_in_by_itself(indexes, tmp_path):
@@ -86,10 +86,10 @@ def test_a_lone_server_signs_claude_in_by_itself(indexes, tmp_path):
     from boring_service_kit.testing import Service, metadata_document, sign_in
     url, claude, callback = "http://127.0.0.1:18513/mcp", "https://claude.ai/oauth/x.json", "https://claude.ai/cb"
     (tmp_path / "state").mkdir(mode=0o700)
-    (tmp_path / "approval").write_text("lone-approval")
+    (tmp_path / "approval").write_text("lone-approval-for-synthetic-tests")
     (tmp_path / "config.json").write_text(json.dumps({
-        "url": url, "issuer": {"database": "state/oauth.db", "approval_secret_file": "approval", "subject": "robin"},
-        "access": [{"subject": "robin", "role": "reader"}]}))
+        "url": url, "mode": "issuer", "issuer": {"database": "state/oauth.db",
+        "approval_secret_file": "approval", "subject": "robin", "role": "reader"}}))
     config = ServiceConfig(tmp_path / "config.json")
     config.issuer.fetch = lambda client_id: metadata_document(client_id, callback, "Claude")
     server = create_server([indexes[0]], **config.auth)
@@ -97,7 +97,7 @@ def test_a_lone_server_signs_claude_in_by_itself(indexes, tmp_path):
     async def scenario():
         async with Service(config.app(server), url) as service:
             assert (await service.call("label_lookup", {"text": "Location ID"}, token=None)).status_code == 401
-            tokens = await sign_in(service.client, url, claude, callback, "lone-approval")
+            tokens = await sign_in(service.client, url, claude, callback, "lone-approval-for-synthetic-tests")
             refused, found = await service.result("label_lookup", {"text": "Location ID is not valid"},
                                                   tokens["access_token"])
             return refused, found

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import boring_deploy
+from deploy_context import deploy_context
 
 ROOT = Path(__file__).resolve().parents[1]
 URL = "https://crocodile-url.example.test/services/canvas/mcp"
@@ -74,7 +75,7 @@ def steps(monkeypatch):
 
 def run_smoke(steps, monkeypatch, answers, logs="", pond=True):
     calls = []
-    config = {"url": URL, **({"pond": {"present": True}} if pond else {})}
+    config = {"": {"url": URL, "authority_url": "https://authority.invalid" if pond else None}}
 
     def compose(ctx, *args, **kwargs):
         calls.append(args)
@@ -94,7 +95,7 @@ def run_smoke(steps, monkeypatch, answers, logs="", pond=True):
     monkeypatch.setattr(steps, "_compose", compose)
     monkeypatch.setattr(steps.urllib.request, "urlopen", web(answers))
     said = []
-    steps.smoke(types.SimpleNamespace(home=Path("/opt/boring-canvas"), run=run, log=said.append))
+    steps.smoke(deploy_context(home=Path("/opt/boring-canvas"), run=run, log=said.append))
     return said, calls
 
 

@@ -7,6 +7,6 @@ FROM ${PYTHON_IMAGE}
 COPY *.whl requirements.txt /build/
 RUN python -m pip install --no-cache-dir --no-index --require-hashes --find-links /build -r /build/requirements.txt \
  && python -m pip check && rm -rf /build
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 BORING_SERVICE_CONTAINER=1
 EXPOSE 18520-18529
 ENTRYPOINT ["boring-mcp-ferry"]

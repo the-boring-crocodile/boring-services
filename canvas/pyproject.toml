@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boring-canvas"
-version = "0.2.20"
+version = "0.3.0"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "COPYING.md"]
 description = "Chat-triggered drawable canvas"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 # mcp: canvas serves the Pond's MCP service protocol. boring-registry and boring-service-kit
 # come from Pond Common releases.
-dependencies = ["mcp>=2.2,<2.3", "boring-registry>=0.7.10,<0.8", "boring-service-kit>=0.7.10,<0.8"]
+dependencies = ["mcp>=2.2,<2.3", "boring-registry>=0.8.0,<0.9", "boring-service-kit>=0.8.0,<0.9"]
 
 [project.scripts]
 boring-canvas-admin = "boring_canvas.admin:main"

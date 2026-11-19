@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "boring-sourcecache-d365"
-version = "0.1.19"
+version = "0.2.0"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "COPYING.md"]
 description = "Independent D365 source snapshots, element and label search"
-requires-python = ">=3.10"
-dependencies = ["mcp>=2.2,<2.3", "boring-registry>=0.7.10,<0.8", "boring-service-kit>=0.7.10,<0.8"]
+requires-python = ">=3.12"
+dependencies = ["mcp>=2.2,<2.3", "boring-registry>=0.8.0,<0.9", "boring-service-kit>=0.8.0,<0.9"]
 
 [project.optional-dependencies]
 test = ["pytest"]

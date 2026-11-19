@@ -20,6 +20,28 @@ from boring_sourcecache_d365.sourcecache import LABEL_REF, Index, build, classif
 from boring_service_kit.outcomes import Failed, Refused
 
 
+def test_missing_path_details_are_json_strings(tmp_path):
+    missing = tmp_path / "missing"
+    for operation in (lambda: build(missing, tmp_path / "index.db", "fixture"),
+                      lambda: Index(missing)):
+        with pytest.raises(Refused) as caught:
+            operation()
+        data = caught.value.as_data()
+        assert data["status"] == "refused" and data["code"] == "not_found"
+        assert data["path"] == str(missing)
+        json.dumps(data, allow_nan=False)
+
+
+@pytest.mark.parametrize("readers", [0, True, b"four", {4}, Path("four"), float("nan")])
+def test_invalid_readers_detail_is_json_text(tmp_path, readers):
+    with pytest.raises(Refused) as caught:
+        build(tmp_path, tmp_path / "index.db", "fixture", readers=readers)
+    data = caught.value.as_data()
+    assert data["status"] == "refused" and data["code"] == "invalid_request"
+    assert data["value"] == str(readers)
+    json.dumps(data, allow_nan=False)
+
+
 @pytest.fixture(scope="module")
 def built(tmp_path_factory):
     root = tmp_path_factory.mktemp("corpus")

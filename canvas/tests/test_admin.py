@@ -16,14 +16,13 @@ from pathlib import Path
 from unittest import mock
 
 from boring_canvas.admin import run, server_args, store_for
-from boring_canvas.server import make_handler
 from boring_canvas.storage import CanvasNotFound, CanvasStore
 
-from canvas_fixtures import ClosesStores, new_canvas
+from canvas_fixtures import ClosesStores, new_canvas, LiveApp
 
 SERVER_CMDLINE = b"\0".join([
     b"python3", b"-m", b"boring_canvas.server",
-    b"--state-dir=/data/state", b"--host=0.0.0.0", b"--port=18510",
+    b"--state-dir=/data/state", b"--config=/run/config/config.json",
     b"--max-canvases=7", b"--create-rate-limit=3", b"--max-age-days=9.5", b"",
 ])
 
@@ -89,8 +88,7 @@ class NoAdminOverHttpTests(ClosesStores):
         self.addCleanup(tmp.cleanup)
         store = self.open_store(Path(tmp.name))
         canvas_id, _ = new_canvas(store)
-        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), make_handler(store, None))
-        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        httpd = LiveApp(store)
         self.addCleanup(httpd.server_close)
         self.addCleanup(httpd.shutdown)
         base = f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -226,9 +224,7 @@ class OperatorTokenTests(ClosesStores):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.store = self.open_store(Path(self.tmp.name))
-        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.store, PUBLIC))
-        self.httpd.RequestHandlerClass.log_message = lambda *args: None
-        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.httpd = LiveApp(self.store, PUBLIC)
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
 

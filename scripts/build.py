@@ -64,12 +64,7 @@ def build(out, target, services=SERVICES, python_version="3.14", common_wheels=N
         for service in services:
             root, dest = ROOT / service, out / service
             dest.mkdir()
-            copy = temp / service
-            copy.mkdir()
-            shutil.copyfile(root / "pyproject.toml", copy / "pyproject.toml")
-            if (root / "README.md").exists():
-                shutil.copyfile(root / "README.md", copy / "README.md")
-            develop.plain_copy(root / "src", copy / "src")
+            copy = develop.package(ROOT, temp / service, service)
             run(tool, "build", "--build-constraint", str(ROOT / "scripts/build-constraints.txt"),
                 "--wheel", "--out-dir", str(dest), str(copy),
                 env=dict(os.environ, SOURCE_DATE_EPOCH=run("git", "log", "-1", "--format=%ct").strip()))
@@ -132,6 +127,8 @@ def release_artifact(artifact, out, service, record):
     files = {f"image/{p.name}": p for p in sorted(dest.iterdir()) if p.is_file()}
     files.update({f"install/{name}": ROOT / source for name, source in INSTALL.get(service, {}).items()})
     files.update({name: ROOT / name for name in ("LICENSE", "COPYING.md")})
+    if service == "mcp-ferry":
+        files["deploy.d/ferry_config.py"] = ROOT / "mcp-ferry/src/boring_mcp_ferry/config.py"
     extra = dict(DEPLOY[service])
     release = {"component": f"boring-{service}", "version": version, "runtime": "docker",
                "default_home": f"/opt/boring-{service}", "image": f"boring-{service}",
@@ -145,7 +142,7 @@ if __name__ == "__main__":
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--target", choices=["linux", "windows"], required=True)
     parser.add_argument("--service", choices=SERVICES, action="append", help="Build selected services; default all")
-    parser.add_argument("--python-version", choices=["3.10", "3.12", "3.13", "3.14"], default="3.14")
+    parser.add_argument("--python-version", choices=["3.12", "3.13", "3.14"], default="3.14")
     parser.add_argument("--common-wheels", type=Path, required=True, help="Pond Common release wheels")
     parser.add_argument("--python-image", help="Linux base image (pin it by digest for deployments); "
                                                "default python:<version>-slim")

@@ -8,4 +8,11 @@
 #   sudo boring-canvas-admin token <name> [--owner <caller>]   (prints a fresh browser token once)
 #   sudo boring-canvas-admin limits
 set -eu
-exec docker compose -f @HOME@/compose.yaml exec -T canvas python3 -m boring_canvas.admin "$@"
+set -- exec -T canvas python3 -m boring_canvas.admin "$@"
+if [ -f @HOME@/boring-image.env ]; then
+    set -- --env-file @HOME@/boring-image.env "$@"
+    if [ -f @HOME@/.env ]; then
+        set -- --env-file @HOME@/.env "$@"
+    fi
+fi
+exec docker compose -f @HOME@/compose.yaml "$@"

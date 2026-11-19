@@ -10,7 +10,7 @@ one machine. On a shared host, any local process could use such a server. The
 ferry gives each one what the Pond expects from a service:
 
 - every call carries a token the Crocodile minted for that Pond and that
-  service, checked by introspection, and `access` decides who may call;
+  service, checked by introspection with the role from its Crocodile grant;
 - the Crocodile's grants decide which Ponds see it;
 - registration and the heartbeat (the service shows as unavailable while its
   server is down).
@@ -42,21 +42,25 @@ Only `tools/list` and `tools/call`; that is all a Pond's worker asks for.
   call time), counted from the request's arrival, covers checking the tool list
   and the call. Without a Pond there is no Pond's call time: only
   `timeout_seconds` bounds a call, so set it. The tool list is cached for a minute and fetched once at a time.
-- Server unreachable, or its tool list not to be had: refused `unavailable`,
-  nothing was sent. No time left before sending: refused `limit`. No answer in
-  time, a broken connection or a protocol error: failed, the call may have run.
-  Nothing is retried. A new or removed tool shows within a minute.
+- Server unreachable: refused `unavailable`. A tool-list count/page cap is
+  refused `limit`; a tool-list fetch deadline is refused `timeout`. No tool
+  call was sent in those cases. No time left before sending a tool call:
+  refused `not_admitted`. No answer after dispatch, a broken connection or a
+  protocol error remains failed: the call may have run. A broken connection uses
+  unavailable; protocol and unexpected backend errors use upstream_error, with
+  backend_code retained for protocol errors and effects unknown. Nothing is retried.
+  A new or removed tool shows within a minute.
 - Its texts (descriptions, answers) are the server's, not ours: data to check.
 
 ## Configuration
 
 One ferry carries several backends. Each backend has its own front end, or sits
 behind a gateway (below): `config/services/NAME.json`, a boring-service-kit
-configuration like every service's (its URL and port, how it signs callers in,
-`access`). Towards a Pond that is `oauth` with the Crocodile and `pond`
-registration: the backend is one Pond service. Every front end takes what the
-kit takes; the one exception: a front end with its own sign-in (`issuer`) does
-not register with a Pond, since a Pond calls only with the Crocodile's tokens.
+configuration like every service's (its URL and one authentication mode).
+Towards a Pond that is mode=crocodile: the same authority supplies registration
+and introspection, and its grant supplies the role. Keys carry their role;
+mode=issuer assigns one role to approved clients and does not register with a
+Pond. Container listener addresses belong to Compose, not these files.
 `config/config.json` lists the backends:
 
 ```json
@@ -71,7 +75,7 @@ not register with a Pond, since a Pond calls only with the Crocodile's tokens.
 
 | Key | What |
 |---|---|
-| `service` | the backend's front end (kit configuration); its port one of 18520-18529, `bind` the ferry's own address (`172.16.46.2` in the template; a wildcard bind is refused), so its `url` is the `https` one the reverse proxy serves (the kit takes plain `http` only on a loopback bind) |
+| `service` | the backend's frontend configuration. At first install Compose assigns its port and fixed default-network address; a wildcard Ferry bind is refused. The public `url` names the reverse-proxied MCP endpoint. |
 | `upstream.url` / `upstream.url_file` | where the ferry reaches the backend; `url_file` when the URL is itself a secret (a secret path) |
 | `upstream.headers_file` | optional JSON object of HTTP headers, for a server with a static secret |
 | `upstream.timeout_seconds` | optional; at most the Pond's call time, which is the default; without a Pond no default (set it) |
@@ -138,9 +142,9 @@ backends and name which ones it carries:
 - A backend needs `service` (its own front end) only when it is not behind a gateway. It may have both:
   each front end is its own way in, with its own sign-in. For a gateway only, leave `service` out (and
   its proxy route).
-- A gateway's `service` is a front end like a backend's: the Crocodile (`oauth`), its own sign-in
-  (`issuer`, [Without a Pond](#without-a-pond)) or access keys (`keys` on a loopback bind: Copilot on a
-  dev box).
+- A gateway selects one mode like any frontend: crocodile, issuer
+  ([Without a Pond](#without-a-pond)) or keys. Native keys runs retain the
+  loopback guard; Linux deployments use the Compose exposure policy.
 
 ## Without a Pond
 
@@ -153,7 +157,7 @@ them. A backend may have its own front end instead, so the client sees its tools
 directly, at the price of a host name, an approval secret and a connector each.
 Both can be mixed, and a backend may have both: each front end is its own way
 in. A Pond and a person can share a backend that way: its own front end towards
-the Pond (`oauth`, `pond`), a gateway with its own sign-in for the person.
+the Pond (mode=crocodile), a gateway with mode=issuer for the person.
 
 What it needs:
 
@@ -172,40 +176,35 @@ What it needs:
 - **The approval secret**: 32 random bytes in `credentials/`, root's and the
   service account's only. Whoever connects enters it once on the approval page;
   without it no client gets a token.
-- **No `service-add`, no `pond`**: there is no Crocodile. The deploy checks the
+- **No Crocodile registration**: there is no Crocodile. The deploy checks the
   front end's answer (401 and its metadata) and skips the reach and
   registration checks.
 - **`timeout_seconds` on each backend**: without a Pond nothing else bounds a
   call.
 
-The first install, Home Assistant's ha-mcp as the one backend (the example
-below), on a host with Docker and Compose 2.24+ and the route above. Set
-`H` to the host name, replace `YOUR-SECRET-PATH` with the path ha-mcp will
-get as its `MCP_SECRET_PATH` (the same value in both places), and copy the
-block; it stops at the first failure:
+After downloading, verifying and unpacking the archive, prepare a protected
+root-owned /root/mcp-ferry-config directory. Its config.json selects the
+backend and gateway, for example:
 
-    V=0.1.5 S=mcp-ferry H=tools-url.example.test B=homeassistant
-    f=boring-$S-$V-linux-x86_64.tar.gz
-    u=https://github.com/the-boring-crocodile/boring-services/releases/download/$S-v$V
-    mkdir -p ~/Downloads && cd ~/Downloads &&
-    curl -fLO "$u/$f" && curl -fLO "$u/$f.sha256" &&
-    sha256sum -c "$f.sha256" &&            # must print OK; if not, the block stops here
-    sudo mkdir -p /root/releases && sudo tar xzf "$f" -C /root/releases &&
-    sudo install -d -m 0700 /root/$S-config &&
-    sudo install -d -m 0700 /root/$S-config/services /root/$S-config/credentials &&
-    sudo tee /root/$S-config/config.json > /dev/null <<EOF &&
-    {"backends": {"$B": {"upstream": {"url_file": "../credentials/$B-url", "timeout_seconds": 60}}},
-     "gateways": {"tools": {"service": "services/tools.json", "backends": ["$B"]}}}
-    EOF
-    sudo tee /root/$S-config/services/tools.json > /dev/null <<EOF &&
-    {"url": "https://$H/mcp", "bind": "172.16.46.2", "port": 18520,
-     "issuer": {"database": "/data/state/oauth/tools.db",
-                "approval_secret_file": "../../credentials/tools-approval", "subject": "robin"},
-     "access": [{"subject": "robin", "role": "writer"}]}
-    EOF
-    sudo sh -c "umask 077 && echo http://$B:8086/YOUR-SECRET-PATH > /root/$S-config/credentials/$B-url" &&
-    sudo sh -c "umask 077 && openssl rand -base64 32 > /root/$S-config/credentials/tools-approval" &&
-    sudo /root/releases/boring-$S-$V/deploy --install --config-dir /root/$S-config
+```json
+{"backends":{"homeassistant":{"upstream":{"url_file":"../credentials/homeassistant-url","timeout_seconds":60}}},
+ "gateways":{"tools":{"service":"services/tools.json","backends":["homeassistant"]}}}
+```
+
+Its services/tools.json selects the own issuer and one approved-client role:
+
+```json
+{"url":"https://tools-url.example.test/mcp","mode":"issuer",
+ "issuer":{"database":"/data/state/oauth/tools.db",
+ "approval_secret_file":"../../credentials/tools-approval","subject":"robin","role":"writer"}}
+```
+
+Provision credentials/homeassistant-url with the backend URL and any secret
+path, and credentials/tools-approval with a private approval secret. These
+are explicit protected inputs; container bind and port settings stay in
+Compose. Install with one command:
+
+    sudo /root/releases/boring-mcp-ferry-VERSION/deploy --install --config-dir /root/mcp-ferry-config
 
 The ferry then runs, and `service_list` shows the backend unavailable until its
 container is in `/opt/boring-mcp-ferry/compose.yaml` (Installing, below; the
@@ -222,11 +221,12 @@ carries: `writer` may call any tool those backends offer, `reader` only those
 they mark read-only. An access token lasts an hour; a client stays signed in
 through its refresh token while it is used (14 days unused end it). A new
 approval secret stops new approvals, not existing ones. To see and remove
-approved clients:
+approved clients (if the service home also has an operator `.env`, add
+`--env-file /opt/boring-mcp-ferry/.env` before the managed env file):
 
-    sudo docker compose -f /opt/boring-mcp-ferry/compose.yaml exec ferry \
+    sudo docker compose --env-file /opt/boring-mcp-ferry/boring-image.env -f /opt/boring-mcp-ferry/compose.yaml exec ferry \
         boring-service-oauth --db /data/state/oauth/tools.db clients
-    sudo docker compose -f /opt/boring-mcp-ferry/compose.yaml exec ferry \
+    sudo docker compose --env-file /opt/boring-mcp-ferry/boring-image.env -f /opt/boring-mcp-ferry/compose.yaml exec ferry \
         boring-service-oauth --db /data/state/oauth/tools.db client-remove CLIENT_ID
 
 ## Installing
@@ -247,8 +247,10 @@ backend block. For each backend:
    own address on that network: the bind alone keeps out ordinary traffic only).
 2. Its entry in `config.json` and, unless only a gateway carries it, its front
    end in `services/NAME.json`.
-3. Towards a Pond: `sudo boring-crocodile-admin service-add NAME --url <front end URL> --ponds ...`,
-   its client secret into `credentials/` (without a Pond: the approval secret, above).
+3. Towards a Pond: use the installer's --url and --callers NAME=ROLE options;
+   it registers each selected frontend after typed APPLY and writes its secret
+   directly into HOME/credentials. Use empty frontend JSON inputs. Without a
+   Pond, use the explicit issuer configuration and approval secret above.
 4. Its own secrets (an API token, the URL with a secret path) into
    `credentials/`, root's and the service account's only.
 

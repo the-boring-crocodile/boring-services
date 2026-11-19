@@ -49,6 +49,7 @@ def render_page(
     scene_svg: str | None,
     elements_json: str | None,
     nonce: str = "",
+    base_path: str = "",
 ) -> str:
     """Fill the page template's %%SLOT%% markers in a single pass.
 
@@ -59,6 +60,8 @@ def render_page(
     values = {
         "TITLE": page_title(name, authed),
         "CANVAS_ID": canvas_id,
+        "CANVAS_BASE": html_lib.escape(base_path + "/canvas", quote=True),
+        "CANVAS_BASE_JSON": script_json(json.dumps(base_path + "/canvas")),
         "AUTHED": "true" if authed else "false",
         "NONCE": nonce,
         "ASSET_REVISION": hashlib.sha256((Path(__file__).parent / "assets" / "BUILD.json").read_bytes()).hexdigest()[:16],

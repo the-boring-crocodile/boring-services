@@ -138,8 +138,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"cannot read the canvas server's command line: {exc}", file=sys.stderr)
             return 2
     target = args.name if args.command == "token" else getattr(args, "canvas_id", None)
+    public_base_url = args.public_base_url
+    if args.state_dir is None and server.config is not None:
+        from boring_service_kit.http import ServiceConfig
+        url = ServiceConfig.inspect(server.config).url
+        if not url.endswith("/mcp"):
+            parser.error("Canvas resource URL must end with /mcp")
+        public_base_url = url[:-4]
     status, result = run(args.command, target, store_for(server), getattr(args, "owner", None),
-                         server.public_base_url)
+                         public_base_url)
     print(json.dumps(result, indent=2, sort_keys=True))
     return status
 

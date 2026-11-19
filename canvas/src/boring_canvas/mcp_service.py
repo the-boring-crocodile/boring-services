@@ -1,7 +1,7 @@
 """Canvas as an MCP service of the Pond (guest architecture, phase 5).
 
-Serves MCP (SDK MCPServer, Streamable HTTP, stateless) on its own internal
-port, in the same process as the stdlib web server, which stays untouched.
+Serves MCP (SDK MCPServer, Streamable HTTP, stateless) beside the browser
+routes on the same ASGI app and listener.
 
 - Tools: create_canvas, push_scene, get_elements, get_edits, list_canvases,
   delete_canvas.
@@ -32,7 +32,7 @@ from boring_service_kit.outcomes import Refused
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from .server import UNSAFE_URL_AUTH_PARAM
+from .web_views import UNSAFE_URL_AUTH_PARAM
 from .storage import (
     EDIT_LOG_ENTRIES, NAME_PATTERN, PUSHED_SCENE_ELEMENT_ID, Canvas, CanvasNotFound, CanvasStore, InvalidSVG, NameTaken,
     RateLimited, TooManyCanvases, scene_version_of,

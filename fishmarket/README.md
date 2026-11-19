@@ -146,6 +146,9 @@ does not wake a model. Poll authenticated `list_ready` when appropriate.
 
 ## Lifecycle and limits
 
+Upload length bounds use the shared limit cause. If streaming has begun, the
+outcome is failed/limit and no file is published; inspect the transfer before retrying.
+
 Defaults: 24h from creation, 2 GiB per file, 10 GiB total live/reserved bytes.
 Upload slots reserve their maximum before receiving bytes; completed files use
 actual size. Empty files work. Claims replace the original deadline with their

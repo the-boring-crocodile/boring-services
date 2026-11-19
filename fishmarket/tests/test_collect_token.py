@@ -18,6 +18,22 @@ from test_market import market as market_fixture, authenticated, upload, URL, BA
 market = market_fixture
 
 
+@pytest.mark.parametrize("status", ["refused", "failed"])
+def test_control_client_preserves_flat_outcome_details(status):
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from boring_service_kit.outcomes import Failed
+    data = {"status": status, "code": "busy", "message": "explanation",
+            "retry_after_seconds": 4, "nested": {"items": [1, None]}}
+    client = TransferClient.__new__(TransferClient)
+    client.session = SimpleNamespace(call_tool=AsyncMock(return_value=SimpleNamespace(
+        is_error=True, content=[SimpleNamespace(text=json.dumps(data))])))
+    with pytest.raises(Refused if status == "refused" else Failed) as caught:
+        asyncio.run(client.call("fixture", {}))
+    assert caught.value.as_data() == data
+
+
 class Clock:
     def __init__(self, now=1000.0):
         self.now = now

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate a service's requirements.lock: runtime dependencies pinned with hashes.
 
-One universal lock per service (Python 3.10-3.14, all platforms), next to its
+One universal lock per service (Python 3.12-3.14, all platforms), next to its
 pyproject.toml. Pond Common comes from its released wheels (--common-wheels,
 until Common is on a package index); everything else from the package index.
 Existing pins and hashes are kept unless you pass --upgrade-package NAME or

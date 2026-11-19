@@ -1,28 +1,9 @@
 {
   "url": "https://crocodile-url.example.test/services/knowledge/mcp",
-  "bind": "0.0.0.0",
-  "port": 18512,
-  "oauth": {
-    "issuer": "https://crocodile-url.example.test",
-    "introspection_url": "https://crocodile-url.example.test/introspect",
-    "client_id": "svc_FROM_SERVICE_ADD",
-    "secret_file": "../credentials/mcp-client-secret"
-  },
-  "pond": {
+  "mode": "crocodile",
+  "crocodile": {
     "url": "https://crocodile-url.example.test",
     "client_id": "svc_FROM_SERVICE_ADD",
     "secret_file": "../credentials/mcp-client-secret"
-  },
-  "access": [
-    {
-      "subject": "pond",
-      "role": "writer",
-      "author": "pond"
-    },
-    {
-      "subject": "garden",
-      "role": "reader",
-      "author": "garden"
-    }
-  ]
+  }
 }

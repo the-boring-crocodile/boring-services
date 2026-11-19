@@ -1,22 +1,47 @@
 # Configuring a service
 
-Every service starts from one JSON file, `--config FILE` (boring-service-kit's
-`ServiceConfig`); relative paths in it resolve beside it. This page is the
-reference for all four services; each service's README adds only its own
-options.
+Canvas, Knowledge, Fishmarket and D365 Sourcecache read `--config FILE`
+through boring-service-kit's `ServiceConfig`; relative paths resolve beside it.
+Ferry reads its routing configuration and one `ServiceConfig` file per selected
+frontend.
+This page owns the shared settings; each service's README adds its own
+options. Configuration-file changes take effect on a service restart.
+Crocodile grant and role changes take effect within the token cache (at most
+60 seconds), without editing service files or restarting the service. For a Linux artifact,
+find its HOME in `/etc/boring-pond/homes.json` and edit
+`HOME/config/config.json`; a site may choose a different HOME from the
+release's `/opt/boring-SERVICE` default. Deploying the same image again
+can leave the running container on its earlier configuration.
+A Crocodile service grant is the owner of its callers and their roles.
+Linux installers take --url/--callers and generate this configuration without
+an input config directory. Ferry additionally needs its routing config;
+keys/own-issuer installs take --config-dir explicitly.
+
+Before switching, a Linux deploy validates the configuration named by
+`--config` in the Compose command using the candidate image, with the
+service's account and mounts. Ferry validates its routing configuration and
+every selected backend or gateway frontend, including its Compose-owned
+listener settings and unique port, URL and Crocodile client ID. Startup uses
+these same checks. Invalid configuration stops the check before the authority reachability probe. Validation does not open or
+initialize issuer databases, test their contents or prove that the server
+will start. It does not restart a service to apply a configuration change.
 
 ## Where tokens come from
 
-The configuration names one or two sources; examples in [../examples](../examples):
+The configuration selects exactly one `mode`, with only that mode's block.
+Examples in [../examples](../examples):
 
-| Example | Tokens come from | Use |
+| Example | Mode | Role owner |
 |---|---|---|
-| `standalone.json` (`issuer`) | the service itself | a lone server for Claude, ChatGPT, VS Code |
-| `family.json`, `canvas-family.json` (`oauth` + `pond`) | the Crocodile, by introspection | a Pond family (Knowledge, Canvas) |
-| `other-issuer.json` (`oauth`) | another issuer with RFC 7662 introspection | Keycloak, Entra |
-| `keys.json` (`keys`) | static access keys (`boring-service-keys`) | scripts, local clients |
+| `standalone.json` | `issuer` | the issuer's single `role` for approved clients |
+| `family.json`, `canvas-family.json` | `crocodile` | the Crocodile service grant |
+| `keys.json` | `keys` | each static access key |
 
-`keys` combines with `issuer` or `oauth`; `issuer` and `oauth` exclude each other.
+Modes cannot be combined. The former `oauth`, `pond` and `access` blocks
+are refused with their replacements named. A Crocodile configuration has one
+`crocodile` object containing `url`, `client_id` and `secret_file`;
+registration and introspection use that same authority. Generic external
+issuer introspection and key/OAuth fallback have been removed.
 
 **Its own issuer.** The service serves `/authorize`, `/token`, `/revoke`,
 `/approve` and the authorization-server metadata at the root of its URL.
@@ -29,37 +54,35 @@ shows registration and the VS Code JSON, and distinguishes vendor versions.
 Open dynamic registration is
 off (`"dynamic_registration": true` turns it on). Each sign-in ends on the
 approval page, which shows where the code goes and asks for the approval
-secret; five wrong secrets cancel that request, never the next. The store's
+secret. Open that page from the client you are connecting. Five wrong tries
+cancel that sign-in. The secret's length protects it: use at least 24
+characters and generate it with `openssl rand -hex 32`. The store's
 directory must be private (0700) to the service account; the store file is
 created 0600.
 Behind a proxy that serves the service under a path, set `issuer.url` to that
 path and route the issuer's paths too.
 
-**An external issuer** (the Crocodile included). Use one when an existing
-authority should decide who the caller is, so each service does not need its
-own sign-in process. The service still decides what that caller may do through
-its `access` list. It must be able to reach the issuer to verify tokens.
+**Crocodile mode.** The Crocodile owns the caller grant and its `reader`
+or `writer` role; writer includes reader. The service reads the role from
+authenticated introspection. It keeps no local caller list. Introspection
+uses HTTP Basic resource-client credentials and checks active, future exp,
+exact aud (string/list), nonempty sub, role and issuer if returned. Missing
+iss is accepted only as an authenticated response from the trusted Crocodile.
+Positive verification caches at most 60 seconds; revocation and role changes
+can take that long. Failed introspection is an infrastructure error.
+A service gets its `svc_` id and secret from
+`/opt/boring-crocodile/current/bin/boring-crocodile-admin service-add NAME --url URL --roles reader,writer --default-role reader --callers NAME=ROLE`.
+Its Crocodile mode also enables registration and heartbeat; tools always
+require a token. Never forward public Pond tokens downstream.
 
-Introspection uses HTTP Basic
-resource-client credentials; checks active, future exp, exact aud
-(string/list), nonempty sub, issuer if returned, and configured scopes. Missing
-iss is accepted only as an authenticated response from the explicitly trusted
-endpoint. Positive verification caches at most 60 seconds; revocation can take
-that long. Failed introspection is an infrastructure error, not a bad-token
-refusal. A family service gets its `svc_` id and secret from
-`boring-crocodile-admin service-add`; the optional `pond` section adds the
-registration and heartbeat (the modern `server/discover` then passes without a
-token; tools always require one). Never forward public Pond tokens downstream.
-
-**Access.** `access` lists the subjects the issuer vouches for, each `reader` or
-`writer`; empty access denies everyone. Writer includes reader. Default
-author/owner is the stable JSON pair [issuer, subject]; a grant's unique
-`author` names it instead (`"author": "pond"`), so authorship and Canvas
-ownership survive a change of issuer. Identity
-never comes from arguments or OAuth client_id. All Knowledge writers may
-revise any entry with expected_version; history remains append-only. Canvas
-retains owner isolation even between writers. Global and premise notebooks
-remain separate; no sync.
+**Identity and access.** The author/owner is the stable JSON pair [issuer,
+subject], verified by the selected mode. Author aliases and local access lists
+are removed. Identity never comes from arguments or OAuth client_id. All
+Knowledge writers may revise any entry with expected_version; history remains
+append-only. Canvas retains owner isolation even between writers. Global and
+premise notebooks remain separate; no sync.
+A Pirate's service grant is also owned by the Crocodile:
+[Let a Pirate call a service](https://github.com/the-boring-crocodile/boring-crocodile/blob/main/docs/SERVICES_AND_PIRATES.md#let-a-pirate-call-a-service).
 
 ## Launch and HTTPS
 
@@ -67,7 +90,7 @@ With the Pond family's [example site](https://github.com/the-boring-crocodile/bo
 
     boring-knowledge http --config config.json --db notebook.db --role global
     boring-sourcecache-d365 serve --config source.json --db snapshot-v1.db
-    boring-canvas-server --config canvas.json --state-dir canvas-state --host 127.0.0.1 --port 18510 --public-base-url https://crocodile-url.example.test
+    boring-canvas-server --config canvas.json --state-dir canvas-state
     boring-fishmarket --config config.json --state-dir state
 
 Give each service its own MCP port and URL. A trusted reverse proxy terminates
@@ -78,10 +101,24 @@ route `/register` as well when dynamic registration is enabled). That includes
 the URL's own metadata path (for `https://crocodile-url.example.test/services/canvas/mcp`:
 `/.well-known/oauth-protected-resource/services/canvas/mcp`): the deploy's
 smoke checks that the MCP URL answers 401 naming it, and that it names the
-URL as its `resource`. Canvas's `/canvas` browser routes go to its
-separate web listener. Listeners bind loopback by default; in a container,
-bind 0.0.0.0 inside and publish only to the proxy. Plain HTTP URLs are for
-loopback only. Browser and MCP stop together.
+URL as its `resource`. Canvas's browser routes use the MCP URL's base plus
+`/canvas`, on the same listener (for `/services/canvas/mcp`, route
+`/services/canvas/canvas/*` there too). Service images declare container mode.
+Compose owns their listeners through `BORING_SERVICE_LISTENERS`, keyed by
+absolute config path. Container JSON carries URL and authentication only:
+`bind`, `port` and `behind_proxy` are refused with the Compose replacement named.
+The deploy checks actual host publications: loopback, or no publications and
+the Compose label `boring.proxy-network` naming an attached network. A JSON
+proxy assertion cannot permit public ports. Ferry assigns frontend addresses
+from the template's normalized published target ports and fixed default-network
+address; its frontend URLs and identities still come from their service configs.
+The resulting Compose environment serves both startup and read-only checks.
+
+Native runs retain their JSON bind/port settings and loopback guard. A native
+non-loopback listener requires explicit `behind_proxy=true` and network access
+restricted to a trusted proxy; the flag adds neither TLS nor firewall rules.
+An HTTPS public URL does not add TLS to a listener. Plain HTTP public URLs
+remain limited to loopback fixtures. Browser and MCP stop together.
 
 Native state defaults follow the kit (Windows `LOCALAPPDATA`, Linux
 `XDG_STATE_HOME`); pass `--state-dir` explicitly on servers.

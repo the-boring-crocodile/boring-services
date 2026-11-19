@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="694pt" height="769pt" viewBox="0 0 694 769">
 <rect x="0" y="0" width="694" height="769" fill="#ffffff"/>
 <text x="20.0" y="36.0" font-family="Helvetica,Arial,sans-serif" font-size="18" font-weight="bold" fill="#111111" xml:space="preserve">Sourcecache: build a snapshot once, search it anywhere</text>
-<text x="20.0" y="56.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Container view · D365 Sourcecache 0.1.18</text>
+<text x="20.0" y="56.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Container view · D365 Sourcecache</text>
 <text x="20.0" y="72.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">D365 source and labels through MCP, without crawling the tree or installing D365.</text>
 <g class="cluster"><rect x="228" y="230" width="442" height="282" fill="none" stroke="#929a96" stroke-width="1"/>
 <text x="238.0" y="502.0" font-family="Helvetica,Arial,sans-serif" font-size="10" fill="#111111" xml:space="preserve">Sourcecache service · serves what was built, read-only</text>

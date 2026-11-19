@@ -1,6 +1,6 @@
 # boring-mcp-ferry: the template a first install turns into HOME/compose.yaml
 # (deploy/install.py). From then on that file is the operator's: install and
-# deploy never rewrite it; the deploy changes only HOME/.env (BORING_IMAGE).
+# deploy never rewrite it; the deploy changes only HOME/boring-image.env (BORING_IMAGE; pass --env-file boring-image.env).
 # @UID@:@GID@ are the service account's, as the OS assigned them.
 #
 # The ferry carries third-party MCP servers ("backends") to a Pond, or to a
@@ -15,6 +15,8 @@
 services:
   ferry:
     image: ${BORING_IMAGE}
+    environment:
+      BORING_SERVICE_LISTENERS: '@FERRY_LISTENERS@'
     user: "@UID@:@GID@"
     restart: unless-stopped
     # Everything the ferry writes is under /data/state (one call log per
@@ -28,7 +30,7 @@ services:
     mem_limit: 512m
     pids_limit: 128
     ports:
-      # Each front end its own port (its config/services/NAME.json), on host
+      # Each frontend gets one of these target ports at first install, on host
       # loopback only: the reverse proxy forwards to it.
       - "127.0.0.1:18520-18529:18520-18529"
     volumes:
@@ -44,8 +46,8 @@ services:
       - "--state-dir=/data/state"
     networks:
       default:
-        # The front ends bind this address only (each config/services/NAME.json:
-        # "bind": "172.16.46.2"), never 0.0.0.0: the backends share the ferry's
+        # Frontends bind only this address through BORING_SERVICE_LISTENERS,
+        # never 0.0.0.0: the backends share the ferry's
         # other networks and must not reach the front ends.
         ipv4_address: 172.16.46.2
       # homeassistant: {}        # one line per backend network

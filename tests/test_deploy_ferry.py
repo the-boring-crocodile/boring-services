@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import boring_deploy
+from deploy_context import deploy_context
 from test_deploy_smoke import METADATA, RIGHT, STARTED, URL, load_steps, web
 
 
@@ -34,8 +35,8 @@ def test_the_deploys_service_is_the_one_with_its_image(steps, monkeypatch):
                          "standin": {"image": "boring-mcp-ferry:0.1.0"},
                          "homeassistant": {"image": "ghcr.io/example/ha-mcp@sha256:abc"}})
     monkeypatch.setattr(steps, "_compose", compose)
-    assert steps._service(None)[0] == "ferry"
-    name, service = steps._service(None, image="boring-mcp-ferry:0.1.0")
+    assert steps._service(deploy_context())[0] == "ferry"
+    name, service = steps._service(deploy_context(), image="boring-mcp-ferry:0.1.0")
     assert (name, service["image"]) == ("ferry", "boring-mcp-ferry:0.1.0")
 
 
@@ -43,11 +44,11 @@ def test_a_stack_without_exactly_one_deploy_service_is_refused(steps, monkeypatc
     monkeypatch.setattr(steps, "_compose", lambda ctx, *a, image=None, check=True: rendered(
         {"a": {"image": "x"}, "b": {"image": "y"}}))
     with pytest.raises(boring_deploy.Failure, match="exactly one service"):
-        steps._service(None)
+        steps._service(deploy_context())
 
 
 def ferry_smoke(steps, monkeypatch, logs, pond=True):
-    front = {"url": URL, **({"pond": {"url": "https://x"}} if pond else {})}
+    front = {"url": URL, "authority_url": "https://x" if pond else None}
     config = {"backends": {"homeassistant": {"service": "services/homeassistant.json", "upstream": {"url": "http://h/mcp"}}}}
     read = []
 
@@ -68,7 +69,7 @@ def ferry_smoke(steps, monkeypatch, logs, pond=True):
     monkeypatch.setattr(steps, "_compose", compose)
     monkeypatch.setattr(steps.urllib.request, "urlopen", web(RIGHT))
     said = []
-    steps.smoke(types.SimpleNamespace(home=Path("/opt/docker/boring-mcp-ferry"), log=said.append,
+    steps.smoke(deploy_context(home=Path("/opt/docker/boring-mcp-ferry"), log=said.append,
                                       run=lambda *c, **k: types.SimpleNamespace(stdout=STARTED + "\n")))
     return said, read
 
@@ -79,7 +80,7 @@ FERRY_LOG = (f"2026-10-18T10:00:03.000000000Z 2026-10-18 10:00:03,000 boring_mcp
 
 def test_a_ferry_smoke_checks_each_backend(steps, monkeypatch):
     said, read = ferry_smoke(steps, monkeypatch, FERRY_LOG)
-    assert read == ["/run/config/config.json", "/run/config/services/homeassistant.json"]
+    assert read == ["/run/config/services/homeassistant.json"]
     assert said == [f"homeassistant: {URL} is its MCP endpoint (401 naming {METADATA})",
                     f"Pond: homeassistant registered by ferry (started {STARTED})"]
 
@@ -93,7 +94,10 @@ def test_a_ferry_backend_without_registration_fails(steps, monkeypatch):
 def test_the_reach_check_reads_a_ferrys_backend_frontend(tmp_path):
     steps = load_steps()
     (tmp_path / "services").mkdir()
-    (tmp_path / "services" / "a.json").write_text(json.dumps({"pond": {"url": "https://croc.example.test"}}))
+    (tmp_path / "services" / "secret").write_text("fixture-only")
+    (tmp_path / "services" / "a.json").write_text(json.dumps({
+        "url": "https://service.example.test/mcp", "mode": "crocodile",
+        "crocodile": {"url": "https://croc.example.test", "client_id": "fixture", "secret_file": "secret"}}))
     (tmp_path / "config.json").write_text(json.dumps({"backends": {"a": {"service": "services/a.json", "upstream": {"url": "http://a/mcp"}}}}))
     captured = {}
 
@@ -102,10 +106,11 @@ def test_the_reach_check_reads_a_ferrys_backend_frontend(tmp_path):
         return types.SimpleNamespace(stdout="")
     steps._compose = compose
     with pytest.raises(Exception):
-        steps._check_crocodile_reach(types.SimpleNamespace(image="i", log=print), "ferry", str(tmp_path / "config.json"))
+        steps._check_crocodile_reach(deploy_context(image="i", log=print), "ferry", str(tmp_path / "config.json"))
     code = captured["code"].replace("import httpx2", "import types as httpx2") + "\n"
     source = str(Path(__file__).resolve().parents[1] / "mcp-ferry/src")
-    stub = ("import sys, types\nsys.path.insert(0, " + repr(source) + ")\n"
+    from test_deploy_frontends import SOURCE_PATHS
+    stub = ("import sys, types\nsys.path[:0] = " + repr([source, *SOURCE_PATHS]) + "\n"
             "types.get = lambda u, **k: types.SimpleNamespace(status_code=401)\n")
     result = subprocess.run([sys.executable, "-I", "-c", stub + code, str(tmp_path / "config.json")],
                             capture_output=True, text=True, check=True)
